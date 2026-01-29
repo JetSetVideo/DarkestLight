@@ -1,0 +1,13 @@
+{
+  "tiles": [
+    { "id": "sea", "label": "Sea" },
+    { "id": "river", "label": "River" },
+    { "id": "sand", "label": "Sand" },
+    { "id": "grass", "label": "Grass" },
+    { "id": "rock", "label": "Rock" },
+    { "id": "mountain", "label": "Mountain" },
+    { "id": "snow", "label": "Snow" }
+  ],
+  "decorations": [{ "id": "tree", "label": "Tree" }]
+}
+

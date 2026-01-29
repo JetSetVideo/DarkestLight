@@ -1,0 +1,10 @@
+{
+  "notes": "Prototype: all SFX are synthesized (WebAudio). This file is the future mapping for named events -> sound design params or asset paths.",
+  "events": [
+    { "id": "ui.hover", "type": "synth" },
+    { "id": "ui.click", "type": "synth" },
+    { "id": "countdown.tick", "type": "synth" },
+    { "id": "countdown.start", "type": "synth" }
+  ]
+}
+
