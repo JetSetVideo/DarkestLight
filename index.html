@@ -1,14 +1,154 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DarkestLight</title>
-    <meta name="description" content="Deus Ex Planetum" />
-  </head>
-  <body>
-    <div id="app"></div>
-    <script type="module" src="/src/main.ts"></script>
-  </body>
-</html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Darkest Light</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": { "three": "./lib/three.module.js" } }
+</script>
+</head>
+<body>
 
+<!-- ======================= MAIN MENU ======================= -->
+<div id="screen-menu" class="screen">
+  <div class="menu-box">
+    <h1 class="title">DARKEST&nbsp;LIGHT</h1>
+    <p class="subtitle">a minimalist god game &mdash; spore &times; black &amp; white &times; godus</p>
+    <div class="menu-buttons" id="menu-buttons">
+      <button id="btn-battle" class="mbtn">Battle Mode</button>
+      <button id="btn-construction" class="mbtn">Construction Mode</button>
+      <button id="btn-story" class="mbtn locked" title="The chronicles are still being written...">Story Mode <span class="soon">soon</span></button>
+      <button id="btn-gallery" class="mbtn">Lexicon</button>
+      <button id="btn-settings" class="mbtn">Settings</button>
+    </div>
+    <div id="civ-select" class="civ-select hidden">
+      <p class="civ-label">Choose your civilization</p>
+      <div id="civ-list" class="civ-list"></div>
+      <button id="btn-civ-cancel" class="mbtn small">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= SETTINGS ======================= -->
+<div id="screen-settings" class="screen hidden">
+  <div class="menu-box wide">
+    <h2 class="panel-title">Settings</h2>
+    <div class="settings-grid">
+      <label>Shadows <input type="checkbox" id="set-shadows" checked></label>
+      <label>Rain particles <input type="checkbox" id="set-particles" checked></label>
+      <label>Fog of war <input type="checkbox" id="set-fog" checked></label>
+      <label>Camera speed <input type="range" id="set-camspeed" min="0.5" max="3" step="0.1" value="1.4"></label>
+      <label>Match length (min) <input type="range" id="set-matchlen" min="5" max="20" step="1" value="20"><span id="set-matchlen-val">20</span></label>
+    </div>
+    <div id="platform-banner" class="platform-banner"></div>
+    <h3 class="panel-sub">Keybindings</h3>
+    <div id="keybind-list" class="keybind-list"></div>
+    <div class="settings-actions">
+      <button id="btn-keybind-reset" class="mbtn small">Reset keys</button>
+      <button id="btn-download-report" class="mbtn small">Download report</button>
+      <button id="btn-settings-back" class="mbtn small">Back</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= GALLERY ======================= -->
+<div id="screen-gallery" class="screen hidden">
+  <div class="gallery-head">
+    <h2 class="panel-title">Lexicon</h2>
+    <div class="gallery-filters">
+      <select id="filter-category">
+        <option value="all">All categories</option>
+        <option value="unit">Units</option>
+        <option value="animal">Animals</option>
+        <option value="monster">Monsters</option>
+        <option value="building">Buildings</option>
+        <option value="flora">Flora</option>
+        <option value="spell">Spells</option>
+        <option value="object">Special objects</option>
+      </select>
+      <select id="filter-civ"><option value="all">All civilizations</option></select>
+      <input type="text" id="filter-search" placeholder="Search...">
+      <button id="btn-gallery-back" class="mbtn small">Back</button>
+    </div>
+  </div>
+  <div id="gallery-grid" class="gallery-grid"></div>
+</div>
+
+<!-- ======================= GAME HUD ======================= -->
+<div id="hud" class="hidden">
+  <div id="hud-top">
+    <div class="hud-group" id="hud-res">
+      <span class="hres" id="hud-food" title="Food">🍖 0</span>
+      <span class="hres" id="hud-wood" title="Wood">🪵 0</span>
+      <span class="hres" id="hud-rock" title="Rock">🪨 0</span>
+      <span class="hres" id="hud-metal" title="Metal">⚙️ 0</span>
+      <span class="hres" id="hud-pop" title="Population">👥 0</span>
+      <span class="hres" id="hud-dp" title="Divine Points">✦ 0</span>
+    </div>
+    <div class="hud-group center">
+      <span id="hud-timer">20:00</span>
+      <div id="clock" title="Day &amp; night">
+        <div id="clock-dial">
+          <span id="clock-sun">☀️</span>
+          <span id="clock-moon">🌙</span>
+        </div>
+      </div>
+      <span id="hud-weather" title="Weather">☀️</span>
+      <span id="hud-season">Spring · Day</span>
+    </div>
+    <div class="hud-group">
+      <span class="hres" id="hud-score">Score 0</span>
+      <button id="btn-tech" class="hbtn">Tech</button>
+      <button id="btn-menu-ingame" class="hbtn">Menu</button>
+    </div>
+  </div>
+  <div id="hud-tools">
+    <button class="tool selected" data-tool="hand" title="Divine hand: drag creatures/trees. Fast release = throw, wiggle = shake. Click = inspect.">✋ Hand</button>
+    <button class="tool" data-tool="spell" title="Draw a shape: ◯ circle = rain · | line = lightning · ∿ zigzag = fire">✨ Spell</button>
+    <button class="tool" data-tool="plant" title="Plant a tree (5 ✦)">🌱 Plant</button>
+    <button class="tool" data-tool="dig" title="Lower terrain — dig rivers">⛏ Dig</button>
+    <button class="tool" data-tool="raise" title="Raise terrain">⛰ Raise</button>
+    <button class="tool" data-tool="build" title="Build structures">🏗 Build</button>
+  </div>
+  <div id="build-menu" class="hidden"></div>
+  <div id="hud-msg"></div>
+  <div id="log-panel">
+    <button id="log-toggle" title="Chronicle of events">📜</button>
+    <div id="log-box" class="hidden">
+      <div class="log-head">Chronicle</div>
+      <div id="log-entries"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= INSPECT PANEL ======================= -->
+<div id="inspect" class="side-panel hidden">
+  <button class="close-x" id="inspect-close">×</button>
+  <div id="inspect-body"></div>
+</div>
+
+<!-- ======================= TECH PANEL ======================= -->
+<div id="tech-panel" class="side-panel wide hidden">
+  <button class="close-x" id="tech-close">×</button>
+  <h3>Technology &amp; Achievements</h3>
+  <div id="tech-body"></div>
+</div>
+
+<!-- ======================= END SCREEN ======================= -->
+<div id="screen-end" class="screen hidden">
+  <div class="menu-box">
+    <h2 id="end-title" class="title small">VICTORY</h2>
+    <div id="end-body"></div>
+    <canvas id="end-chart" width="560" height="170"></canvas>
+    <button id="btn-end-menu" class="mbtn">Back to menu</button>
+  </div>
+</div>
+
+<canvas id="game-canvas"></canvas>
+<div id="spell-trail"></div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

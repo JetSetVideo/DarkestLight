@@ -1,0 +1,9 @@
+{
+  "name": "darkest-light",
+  "version": "1.0.0",
+  "description": "A minimalist 3D god game in pure Three.js — Spore x Black & White x Godus",
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m http.server 8123"
+  }
+}
