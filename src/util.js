@@ -45,17 +45,16 @@ export function makeFBM(seed, octaves = 4) {
 }
 
 // ---------------- Spell shape recognition ----------------
-// Input: array of {x,y} screen points. Output: 'circle' | 'line' | 'zigzag' | null
+// Output: 'circle' | 'circle_soft' | 'line' | 'zigzag' | 'spiral' | 'star' | null
 export function recognizeShape(pts) {
   if (pts.length < 6) return null;
   let len = 0;
   for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
-  if (len < 60) return null;
+  if (len < 40) return null;
 
   const start = pts[0], end = pts[pts.length - 1];
   const endDist = Math.hypot(end.x - start.x, end.y - start.y);
 
-  // centroid + radius variance for circle test
   let cx = 0, cy = 0;
   for (const p of pts) { cx += p.x; cy += p.y; }
   cx /= pts.length; cy /= pts.length;
@@ -65,9 +64,23 @@ export function recognizeShape(pts) {
   let rVar = 0;
   for (const p of pts) { const d = Math.hypot(p.x - cx, p.y - cy) - rMean; rVar += d * d; }
   rVar = Math.sqrt(rVar / pts.length);
-  if (endDist < rMean * 0.9 && rVar / rMean < 0.35 && rMean > 25) return 'circle';
 
-  // direction changes for zigzag test
+  // Spiral: radius grows/shrinks while winding (angle progress high)
+  let angProg = 0, prevA = Math.atan2(pts[0].y - cy, pts[0].x - cx);
+  let rFirst = Math.hypot(pts[0].x - cx, pts[0].y - cy);
+  let rLast = Math.hypot(end.x - cx, end.y - cy);
+  for (let i = 1; i < pts.length; i++) {
+    const a = Math.atan2(pts[i].y - cy, pts[i].x - cx);
+    let d = a - prevA;
+    if (d > Math.PI) d -= Math.PI * 2;
+    if (d < -Math.PI) d += Math.PI * 2;
+    angProg += d;
+    prevA = a;
+  }
+  if (Math.abs(angProg) > Math.PI * 2.2 && Math.abs(rLast - rFirst) / Math.max(rMean, 1) > 0.25)
+    return 'spiral';
+
+  // Star: closed-ish, many sharp turns, high radius variance
   let turns = 0, prevAng = null;
   for (let i = 2; i < pts.length; i += 2) {
     const ang = Math.atan2(pts[i].y - pts[i - 2].y, pts[i].x - pts[i - 2].x);
@@ -78,9 +91,14 @@ export function recognizeShape(pts) {
     }
     prevAng = ang;
   }
-  if (turns >= 3) return 'zigzag';
+  if (endDist < rMean * 1.1 && turns >= 5 && rVar / rMean > 0.28) return 'star';
 
-  // straightness for line test
+  // Soft heal circle: small, smooth, closed (Healing Aura)
+  if (endDist < rMean * 0.95 && rVar / rMean < 0.28 && rMean > 12 && rMean < 55 && len < 280)
+    return 'circle_soft';
+  // Full rain circle: larger closed loop
+  if (endDist < rMean * 0.9 && rVar / rMean < 0.35 && rMean > 25) return 'circle';
+  if (turns >= 3) return 'zigzag';
   if (endDist / len > 0.82) return 'line';
   return null;
 }

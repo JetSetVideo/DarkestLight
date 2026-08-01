@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { CIVS, CIV_KEYS, CLASSES, BUILDINGS, TECHS, FAVORS, TITLES, JOB_LABEL } from './civs.js';
 import { buildCatalog } from './models.js';
 import { Creature, Animal, Monster, Building, ResourceNode } from './entities.js';
-import { dnaString, GENES } from './entities.js';
+import { dnaString, dnaLociTable, GENES } from './entities.js';
 import { fmtTime } from './util.js';
 import { WEATHER_META } from './world.js';
 import {
@@ -48,6 +48,8 @@ export class UI {
     $('inspect-close').onclick = () => this.closeInspect();
     $('tech-close').onclick = () => $('tech-panel').classList.add('hidden');
     $('btn-tech').onclick = () => this.toggleTechPanel();
+    $('ledger-close')?.addEventListener('click', () => $('ledger-panel').classList.add('hidden'));
+    $('btn-ledger')?.addEventListener('click', () => this.toggleLedger());
     $('log-toggle').onclick = () => $('log-box').classList.toggle('hidden');
     $('btn-keybind-reset').onclick = () => {
       this.keybinds = resetKeybinds(this.platform.layout);
@@ -87,6 +89,17 @@ export class UI {
     $('filter-category').onchange = () => this.filterGallery();
     $('filter-civ').onchange = () => this.filterGallery();
     $('filter-search').oninput = () => this.filterGallery();
+    for (const tab of document.querySelectorAll('#lexicon-tabs .ltab')) {
+      tab.onclick = () => {
+        document.querySelectorAll('#lexicon-tabs .ltab').forEach(t => t.classList.remove('selected'));
+        tab.classList.add('selected');
+        const v = tab.dataset.tab;
+        if ($('filter-category')) $('filter-category').value = v === 'object' ? 'object' : v;
+        // "Divine" tab shows spells + objects
+        this._lexTab = v;
+        this.filterGallery();
+      };
+    }
 
     // settings inputs
     $('set-shadows').checked = this.settings.shadows;
@@ -298,7 +311,54 @@ export class UI {
       (cy.isNight && cy.moonOut ? ' · moonlit night' : cy.isNight ? ' · moonless night' : '');
     $('hud-season').textContent = `${cy.season} · ${cy.isNight ? (cy.moonOut ? 'Moonlit night' : 'Dark night') : 'Day'} ${cy.day + 1} · ${wm.label} · Faith ${Math.round(faith * 100)}%`;
     $('hud-score').textContent = `Score ${game.scoreOf('player')}`;
+    const align = game.alignmentInfo?.();
+    const alignEl = $('hud-align');
+    if (alignEl && align) alignEl.textContent = align.label;
+    if (game.paused && game.focusQueue?.length) {
+      const q = $('hud-focusq');
+      if (q) q.textContent = `Focus ×${game.focusQueue.length}`;
+    } else {
+      const q = $('hud-focusq');
+      if (q) q.textContent = '';
+    }
     if (this._inspected) this.renderInspect(game, this._inspected);
+    if (!$('ledger-panel')?.classList.contains('hidden')) this.renderLedger(game);
+  }
+
+  toggleLedger() {
+    const panel = $('ledger-panel');
+    if (!panel) return;
+    const open = panel.classList.toggle('hidden') === false;
+    if (open && this._game) this.renderLedger(this._game);
+  }
+
+  renderLedger(game) {
+    const el = $('ledger-body');
+    if (!el || !game) return;
+    const s = game.ledgerStats();
+    const align = game.alignmentInfo();
+    const culture = game.culture?.player;
+    const medGenes = ['speed', 'strength', 'intelligence', 'aggression', 'faithAffinity', 'swim', 'fertility', 'skinTone'];
+    const bars = medGenes.map(g => {
+      const v = s.medians[g] ?? 0.5;
+      return `<div class="kv"><b>${g}</b><span>${Math.round(v * 100)}</span></div>
+        <div class="bar"><i style="width:${Math.round(v * 100)}%"></i></div>`;
+    }).join('');
+    const races = Object.entries(s.races).map(([k, n]) =>
+      `<div class="kv"><b>${k}</b><span>${n}</span></div>`).join('') || '<div class="kv"><b>—</b><span>0</span></div>';
+    el.innerHTML = `
+      <div class="kv"><b>Alignment</b><span>${align.label} (${align.value.toFixed(2)})</span></div>
+      <div class="kv"><b>Population</b><span>${s.pop}</span></div>
+      <div class="kv"><b>Hybrids</b><span>${s.hybrids}</span></div>
+      <div class="kv"><b>Flora / Fauna</b><span>${s.flora} / ${s.fauna}</span></div>
+      <div class="kv"><b>Fertility</b><span>${Math.round(s.fertility * 100)}%</span></div>
+      <div class="kv"><b>Faith</b><span>${Math.round(s.faith * 100)}%</span></div>
+      <div class="kv"><b>Culture</b><span>${culture ? `${culture.symbol} ${culture.style}` : '—'}</span></div>
+      ${game.avatar?.learned ? `<div class="kv"><b>Avatar mass/agg</b><span>${game.avatar.learned.mass.toFixed(2)} / ${game.avatar.learned.aggression.toFixed(2)}</span></div>` : ''}
+      <h4>Races</h4>${races}
+      <h4>Median DNA</h4>${bars}
+      <p class="dna">Pause (❚❚) queues miracles — resume flushes Focus Mode.</p>
+    `;
   }
 
   // ---------------- inspection ----------------
@@ -330,6 +390,7 @@ export class UI {
         <h3>${ent.name}</h3>
         <div class="titleline">${ent.displayTitle}</div>
         ${kv('Civilization', CIVS[ent.civKey].name)}
+        ${kv('Race / ancestry', ent.raceKey || ent.civKey)}
         ${kv('Job', JOB_LABEL[ent.cls] || CLASSES[ent.cls].name)}
         ${ent.titles.length ? kv('Titles', ent.titles.map(t => TITLES[t]?.name || t).join(', ')) : ''}
         ${kv('Sex / Age', `${ent.sex} · ${Math.floor(ent.age)}y (${ent.lifeStage})`)}
@@ -344,12 +405,15 @@ export class UI {
         ${kv('Speed', ent.speed.toFixed(2))}
         ${kv('Strength', ent.strength.toFixed(2))}
         ${kv('Intelligence', ent.intelligence.toFixed(2))}
+        ${kv('Mass / drag', `${(ent.dna.mass ?? 0.5).toFixed(2)} / ${(ent.dna.windDrag ?? 0.5).toFixed(2)}`)}
         <h4>Faith</h4>
         ${kv('Toward you', ent.attitudeToward('player') + ` (${Math.round(ent.beliefs.player)})`)}
         ${kv('Toward enemy god', ent.attitudeToward('enemy') + ` (${Math.round(ent.beliefs.enemy)})`)}
-        <h4>DNA</h4>
-        <div class="dna">${dnaString(ent.dna)}</div>
-        <div class="dna">${GENES.map(g => `${g}: ${(ent.dna[g] ?? 0.5).toFixed(2)}`).join(' · ')}</div>`;
+        <h4>DNA (XX/YY genome)</h4>
+        <div class="dna">${dnaString(ent.genome || ent.dna)}</div>
+        <div class="dna muted">${dnaLociTable(ent.genome, 12)}</div>
+        <div class="dna">${GENES.slice(0, 12).map(g => `${g}:${(ent.dna[g] ?? 0.5).toFixed(2)}`).join(' · ')}</div>
+        <div class="dna muted">${GENES.slice(12).map(g => `${g}:${(ent.dna[g] ?? 0.5).toFixed(2)}`).join(' · ')}</div>`;
     } else if (ent instanceof Building) {
       if (!game.buildings.includes(ent)) { this.closeInspect(); return; }
       const def = BUILDINGS[ent.type];
@@ -577,11 +641,14 @@ export class UI {
     renderer.dispose();
   }
   filterGallery() {
-    const cat = $('filter-category').value;
+    const tab = this._lexTab || $('filter-category')?.value || 'all';
     const civ = $('filter-civ').value;
     const q = $('filter-search').value.toLowerCase();
     for (const card of $('gallery-grid').children) {
-      const okCat = cat === 'all' || card.dataset.category === cat;
+      const c = card.dataset.category;
+      let okCat = tab === 'all' || c === tab;
+      if (tab === 'object') okCat = c === 'object' || c === 'spell';
+      if (tab === 'animal') okCat = c === 'animal' || c === 'monster';
       const okCiv = civ === 'all' || card.dataset.civ === civ || card.dataset.civ === 'all';
       const okQ = !q || card.dataset.name.includes(q);
       card.style.display = okCat && okCiv && okQ ? '' : 'none';

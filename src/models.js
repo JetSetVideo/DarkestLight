@@ -608,6 +608,15 @@ export function buildSpellGlyph(key) {
       const a = (i / 8) * Math.PI * 2;
       g.add(box(0.04, 0.35, 0.04, 0x9db8d8, Math.cos(a) * 0.35, 0.25, Math.sin(a) * 0.35));
     }
+  } else if (key === 'heal') {
+    g.add(cyl(0.55, 0.55, 0.04, 28, 0xa8ffe0, 0, 0.45, 0));
+    g.add(box(0.12, 0.55, 0.12, 0xe8fff8, 0, 0.55, 0));
+    g.add(box(0.55, 0.12, 0.12, 0xe8fff8, 0, 0.55, 0));
+  } else if (key === 'shield') {
+    g.add(sph(0.45, 0xe8c064, 0, 0.5, 0, 12));
+    g.children[0].material = new THREE.MeshLambertMaterial({
+      color: 0xe8c064, transparent: true, opacity: 0.45, wireframe: true,
+    });
   } else if (key === 'lightning') {
     const pts = [[0, 1.2], [0.15, 0.7], [-0.1, 0.7], [0.2, 0.2], [-0.05, 0.2], [0.1, -0.1]];
     for (let i = 0; i < pts.length - 1; i++) {
@@ -619,6 +628,16 @@ export function buildSpellGlyph(key) {
       bolt.material = new THREE.MeshLambertMaterial({ color: 0xfff3a0, emissive: 0xccaa40 });
       g.add(bolt);
     }
+  } else if (key === 'storm') {
+    g.add(cyl(0.5, 0.2, 0.15, 16, 0x8fa3b8, 0, 0.7, 0));
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      g.add(box(0.35, 0.04, 0.04, 0x9db8d8, Math.cos(a) * 0.25, 0.4, Math.sin(a) * 0.25));
+    }
+  } else if (key === 'meteor' || key === 'earthquake') {
+    const ball = sph(0.35, key === 'meteor' ? 0x5a4030 : 0x8a6b45, 0, 0.5, 0);
+    ball.material = new THREE.MeshLambertMaterial({ color: key === 'meteor' ? 0x5a4030 : 0x8a6b45, emissive: 0x331800 });
+    g.add(ball);
   } else {
     const ball = sph(0.35, 0xff6a20, 0, 0.5, 0);
     ball.material = new THREE.MeshLambertMaterial({ color: 0xff6a20, emissive: 0xcc4400 });

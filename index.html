@@ -57,8 +57,17 @@
 <div id="screen-gallery" class="screen hidden">
   <div class="gallery-head">
     <h2 class="panel-title">Lexicon</h2>
+    <div class="lexicon-tabs" id="lexicon-tabs">
+      <button class="ltab selected" data-tab="all">All</button>
+      <button class="ltab" data-tab="unit">Units</button>
+      <button class="ltab" data-tab="animal">Fauna</button>
+      <button class="ltab" data-tab="spell">Spells</button>
+      <button class="ltab" data-tab="building">Buildings</button>
+      <button class="ltab" data-tab="flora">Flora</button>
+      <button class="ltab" data-tab="object">Divine</button>
+    </div>
     <div class="gallery-filters">
-      <select id="filter-category">
+      <select id="filter-category" class="hidden">
         <option value="all">All categories</option>
         <option value="unit">Units</option>
         <option value="animal">Animals</option>
@@ -88,6 +97,15 @@
       <span class="hres" id="hud-dp" title="Divine Points">✦ 0</span>
     </div>
     <div class="hud-group center">
+      <div id="time-controls" title="Simulation speed">
+        <button id="btn-time-pause" class="tbtn" title="Pause">❚❚</button>
+        <button id="btn-time-play" class="tbtn selected" title="Normal (slow)">▶</button>
+        <button id="btn-time-fast" class="tbtn" title="Fast">≫</button>
+        <button id="btn-time-faster" class="tbtn" title="Very fast">⋙</button>
+        <span id="hud-timescale">×0.45</span>
+        <span id="hud-focusq" title="Queued Focus Mode actions"></span>
+        <span id="hud-align" title="God alignment">Balanced</span>
+      </div>
       <span id="hud-timer">20:00</span>
       <div id="clock" title="Day &amp; night">
         <div id="clock-dial">
@@ -101,13 +119,18 @@
     <div class="hud-group">
       <span class="hres" id="hud-score">Score 0</span>
       <button id="btn-tech" class="hbtn">Tech</button>
+      <button id="btn-ledger" class="hbtn" title="DNA &amp; ecosystem ledger">📒 Ledger</button>
+      <button id="btn-influence" class="hbtn" title="God / village / belief influence">◎ Influence</button>
+      <button id="btn-invoke" class="hbtn" title="Summon fauna (biome + faith + ✦)">🐾 Invoke</button>
       <button id="btn-menu-ingame" class="hbtn">Menu</button>
     </div>
   </div>
   <div id="hud-tools">
-    <button class="tool selected" data-tool="hand" title="Divine hand: drag creatures/trees. Fast release = throw, wiggle = shake. Click = inspect.">✋ Hand</button>
-    <button class="tool" data-tool="spell" title="Draw a shape: ◯ circle = rain · | line = lightning · ∿ zigzag = fire">✨ Spell</button>
-    <button class="tool" data-tool="plant" title="Plant a tree (5 ✦)">🌱 Plant</button>
+    <button class="tool selected" data-tool="hand" title="Hold 1s to lift · swipe to slap · circle to pet · throw with velocity">✋ Hand</button>
+    <button class="tool" data-tool="spell" title="LMB draw or RMB miracle: ◯ rain · small ◯ heal · spiral storm · | lightning · ∿ fire · star meteor · long zigzag quake · RMB circle = shield">✨ Spell</button>
+    <button class="tool" data-tool="invoke" title="Summon fauna suited to biome &amp; your race (costs ✦ + faith)">🐾 Invoke</button>
+    <button class="tool" data-tool="scoop" title="Scoop wood/food piles and drop at camp">🫧 Scoop</button>
+    <button class="tool" data-tool="plant" title="Plant a tree (5 ✦) — drag to paint flora">🌱 Plant</button>
     <button class="tool" data-tool="dig" title="Lower terrain — dig rivers">⛏ Dig</button>
     <button class="tool" data-tool="raise" title="Raise terrain">⛰ Raise</button>
     <button class="tool" data-tool="build" title="Build structures">🏗 Build</button>
@@ -134,6 +157,13 @@
   <button class="close-x" id="tech-close">×</button>
   <h3>Technology &amp; Achievements</h3>
   <div id="tech-body"></div>
+</div>
+
+<!-- ======================= LEDGER PANEL ======================= -->
+<div id="ledger-panel" class="side-panel wide hidden">
+  <button class="close-x" id="ledger-close">×</button>
+  <h3>Ecosystem &amp; DNA Ledger</h3>
+  <div id="ledger-body"></div>
 </div>
 
 <!-- ======================= END SCREEN ======================= -->

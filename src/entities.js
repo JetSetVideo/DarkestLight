@@ -6,26 +6,32 @@ import { buildHuman, buildAnimal, buildMonster, buildTree, buildBush, buildRock,
 import { clamp, lerp, genName, dist2 } from './util.js';
 import { WATER_Y } from './world.js';
 import { iconForTask, STATUS_ICONS } from './actions.js';
+import {
+  GENES, makeGenome, mixGenome, phenotypeMap, dnaString as genomeString,
+  genomeFromLegacy, isHybrid, dnaLociTable,
+} from './dna.js';
 import * as THREE from 'three';
 
-export const GENES = ['speed', 'intelligence', 'resilience', 'strength', 'responsivity', 'interactivity', 'emotion', 'longevity', 'nightsight'];
+export { GENES, dnaLociTable } from './dna.js';
 
-export function makeDNA(rng, civBonus = {}) {
-  const dna = {};
-  for (const g of GENES) dna[g] = clamp(0.35 + rng() * 0.3 + (civBonus[g] || 0), 0.05, 1);
-  return dna;
+/** @deprecated use makeGenome — kept for call sites expecting flat phenotypes */
+export function makeDNA(rng, civBonus = {}, civKey = 'franks') {
+  return phenotypeMap(makeGenome(rng, civKey));
 }
-export function mixDNA(rng, a, b) {
-  const dna = {};
-  for (const g of GENES) {
-    let v = rng() > 0.5 ? (a[g] ?? 0.5) : (b[g] ?? 0.5);
-    v += (rng() - 0.5) * 0.12; // mutation
-    dna[g] = clamp(v, 0.05, 1);
-  }
-  return dna;
+/** Mix two creatures' genomes (or legacy flat dna) → phenotype map + attach ._genome */
+export function mixDNA(rng, a, b, biomeHints = {}) {
+  // accepts Creature, genome, or legacy flat dna
+  const gA = a?.genome || a?._genome || (a?.loci ? a : genomeFromLegacy(a, a?.civKey || a?.raceKey || 'franks', rng));
+  const gB = b?.genome || b?._genome || (b?.loci ? b : genomeFromLegacy(b, b?.civKey || b?.raceKey || 'franks', rng));
+  const child = mixGenome(rng, gA, gB, biomeHints);
+  const ph = phenotypeMap(child);
+  ph._genome = child;
+  return ph;
 }
-export function dnaString(dna) {
-  return GENES.map(g => g[0].toUpperCase() + Math.round((dna[g] ?? 0.5) * 9)).join('·');
+export function dnaString(dnaOrGenome) {
+  if (dnaOrGenome?._genome) return genomeString(dnaOrGenome._genome);
+  if (dnaOrGenome?.loci) return genomeString(dnaOrGenome);
+  return genomeString(dnaOrGenome);
 }
 
 let NEXT_ID = 1;
@@ -39,9 +45,23 @@ export class Creature {
     this.civKey = game.civOf(side);
     this.cls = clsKey;                      // job/class: farmer, knight, philosopher, king, queen, princess
     this.titles = titles;                   // cumulative: prince, princess, chief...
-    this.dna = dna || makeDNA(game.rng, CIVS[this.civKey].bonus);
+    // DNA: genome (XX/YY loci) + flat phenotype map for gameplay stats
+    if (dna?._genome) {
+      this.genome = dna._genome;
+      this.dna = dna;
+    } else if (dna?.loci) {
+      this.genome = dna;
+      this.dna = phenotypeMap(dna);
+    } else if (dna && typeof dna.speed === 'number') {
+      this.genome = genomeFromLegacy(dna, this.civKey, game.rng);
+      this.dna = phenotypeMap(this.genome);
+    } else {
+      this.genome = makeGenome(game.rng, this.civKey);
+      this.dna = phenotypeMap(this.genome);
+    }
+    this.raceKey = this.genome.raceKey || this.civKey;
     this.sex = game.rng() > 0.5 ? 'M' : 'F';
-    this.name = genName(game.rng, this.civKey);
+    this.name = genName(game.rng, this.raceKey.includes('+') ? this.raceKey.split('+')[0] : this.civKey);
     this.age = age;
     this.hp = this.maxHp;
     this.energy = 100;
@@ -169,7 +189,8 @@ export class Creature {
   get isWarrior() { return this.cls === 'knight'; }
   get speed() {
     let s = 2.2 * 0.7 * (0.55 + this.dna.speed * 0.9) * this.ageMul * this.favorMul *
-      this.game.cycles.speedMul * (this.isWarrior ? 1.15 : 1);
+      this.game.cycles.speedMul * (this.isWarrior ? 1.15 : 1) *
+      (1 - (this.dna.mass || 0.5) * 0.15);
     if (this.isWarrior && this.game.hasTech(this.side, 'berserk')) s *= 1.15;
     if (this.alert > 0) s *= 1.1;
     // sprinting is costly — energy must remain
@@ -280,10 +301,23 @@ export class Creature {
       this.energy = Math.min(this.maxEnergy, this.energy + dt * (this.task === 'sleep' ? 12 : 4));
     }
 
-    if (this.held) return;
+    if (this.held) {
+      this.animateFlail(dt);
+      this.refreshStatusIcon();
+      return;
+    }
 
     if (this.airborne) {
-      this.vel.y -= 22 * dt;
+      // gravity + wind + drag from DNA
+      const wind = g.cycles?.wind || 0;
+      const ang = g.cycles?.windAngle || 0;
+      const drag = 0.35 + (this.dna.windDrag || 0.5) * 0.9;
+      const mass = 0.6 + (this.dna.mass || 0.5) * 1.2;
+      this.vel.y -= (18 + mass * 6) * dt;
+      this.vel.x += Math.cos(ang) * wind * 6 * dt;
+      this.vel.z += Math.sin(ang) * wind * 6 * dt;
+      this.vel.x *= (1 - drag * dt);
+      this.vel.z *= (1 - drag * dt);
       this.pos.addScaledVector(this.vel, dt);
       const ground = g.terrain.getHeight(this.pos.x, this.pos.z);
       if (this.pos.y <= ground) {
@@ -293,6 +327,9 @@ export class Creature {
         this.vel.set(0, 0, 0);
         if (impact > 8) this.damage((impact - 8) * 4, null);
         this.fear = 1;
+        this.animate(dt); // settle posture
+      } else {
+        this.animateFlail(dt);
       }
       return;
     }
@@ -671,10 +708,79 @@ export class Creature {
     g.terrain.addWear(this.pos.x, this.pos.z, this.sprinting ? 0.018 : 0.010);
   }
 
+  /** Funny circling extremities while held / thrown (B&W flail). */
+  animateFlail(dt) {
+    const L = this.mesh.userData.limbs;
+    if (!L) return;
+    this._flailT = (this._flailT || 0) + dt * 14;
+    const t = this._flailT;
+    if (L.armL) L.armL.rotation.set(Math.sin(t) * 1.8, 0, Math.cos(t * 1.3) * 1.2);
+    if (L.armR) L.armR.rotation.set(Math.cos(t) * 1.8, 0, Math.sin(t * 1.1) * -1.2);
+    if (L.legL) L.legL.rotation.x = Math.sin(t * 1.4) * 1.1;
+    if (L.legR) L.legR.rotation.x = Math.cos(t * 1.4) * 1.1;
+    if (L.lArmL) L.lArmL.rotation.x = Math.sin(t * 2) * 0.8;
+    if (L.lArmR) L.lArmR.rotation.x = Math.cos(t * 2) * 0.8;
+    if (L.head) L.head.rotation.z = Math.sin(t * 0.7) * 0.35;
+    this.mesh.rotation.z = Math.sin(t * 0.5) * 0.15;
+  }
+
   animate(dt) {
     const L = this.mesh.userData.limbs;
     if (!L) return;
+    // settle from flail
+    this.mesh.rotation.z *= 0.85;
+    if (L.head) L.head.rotation.z *= 0.85;
     const panic = this.task === 'panic';
+    const g = this.game;
+    const inWater = g.terrain.isWater(this.pos.x, this.pos.z);
+    const swimGene = this.dna.swim ?? 0.5;
+
+    // swim / drown posture
+    if (inWater) {
+      this._pose = 'swim';
+      this.walkPhase += dt * (1.2 + swimGene);
+      const s = Math.sin(this.walkPhase) * 0.55;
+      if (L.armL) L.armL.rotation.set(-0.6 + s, 0, 0.8);
+      if (L.armR) L.armR.rotation.set(-0.6 - s, 0, -0.8);
+      if (L.legL) L.legL.rotation.x = s * 0.7;
+      if (L.legR) L.legR.rotation.x = -s * 0.7;
+      this.mesh.rotation.x = lerp(this.mesh.rotation.x, 0.35, dt * 3);
+      this.pos.y = Math.max(this.pos.y, WATER_Y - 0.05 + Math.sin(this.walkPhase) * 0.04);
+      if (swimGene < 0.25) this.hp = Math.max(1, this.hp - dt * 2); // weak swimmers struggle
+      this._moving = false;
+      const stage = this.lifeStage === 'child' ? 0.55 : this.lifeStage === 'elder' ? 0.92 : 1;
+      this.mesh.scale.setScalar(this._baseScale * stage);
+      return;
+    }
+
+    // kneel before royalty
+    if (this._pose === 'kneel' && !this._moving && !panic) {
+      if (L.legL) L.legL.rotation.x = 1.1;
+      if (L.legR) L.legR.rotation.x = 1.1;
+      if (L.shinL) L.shinL.rotation.x = -1.4;
+      if (L.shinR) L.shinR.rotation.x = -1.4;
+      if (L.armL) L.armL.rotation.x = -0.4;
+      if (L.armR) L.armR.rotation.x = -0.4;
+      if (L.head) L.head.rotation.x = 0.25;
+      this.mesh.position.y = g.terrain.getHeight(this.pos.x, this.pos.z) - 0.12;
+      this._pose = null; // one-shot until next group tick
+      const stage = this.lifeStage === 'child' ? 0.55 : this.lifeStage === 'elder' ? 0.92 : 1;
+      this.mesh.scale.setScalar(this._baseScale * stage);
+      return;
+    }
+
+    // hold hands with partner
+    const partner = this._holdHandsWith;
+    if (partner && partner.hp > 0 && !this._moving && !panic) {
+      const dx = partner.pos.x - this.pos.x, dz = partner.pos.z - this.pos.z;
+      this.mesh.rotation.y = Math.atan2(dx, dz);
+      if (L.armR) L.armR.rotation.set(0.2, 0, -0.9);
+      if (L.armL) L.armL.rotation.set(0.2, 0, 0.4);
+      if (L.handR) L.handR.position.set(0.28, 0.5, 0.12);
+    } else {
+      this._holdHandsWith = null;
+    }
+
     if (this._moving) {
       const rate = this.sprinting ? 4.5 : 2.2;
       this.walkPhase += dt * this.speed * rate;
@@ -684,26 +790,24 @@ export class Creature {
       if (L.shinL) L.shinL.rotation.x = s * 0.4;
       if (L.shinR) L.shinR.rotation.x = -s * 0.4;
       if (panic) {
-        // arms raised overhead while sprinting away
         if (L.armL) L.armL.rotation.x = -2.4;
         if (L.armR) L.armR.rotation.x = -2.4;
         if (L.lArmL) L.lArmL.rotation.x = -0.3;
         if (L.lArmR) L.lArmR.rotation.x = -0.3;
         if (L.handL) L.handL.position.y = 0.72;
         if (L.handR) L.handR.position.y = 0.72;
-      } else {
+      } else if (!partner) {
         if (L.armL) L.armL.rotation.x = -s * 0.65;
         if (L.armR) L.armR.rotation.x = s * 0.65;
         if (L.lArmL) L.lArmL.rotation.x = -s * 0.3;
         if (L.lArmR) L.lArmR.rotation.x = s * 0.3;
       }
-      // subtle torso bob
       if (L.chest) L.chest.position.y = 0.72 + Math.abs(s) * 0.02;
       this._moving = false;
     } else {
       if (L.legL) L.legL.rotation.x *= 0.9;
       if (L.legR) L.legR.rotation.x *= 0.9;
-      if (!panic) {
+      if (!panic && !partner) {
         if (L.armL) L.armL.rotation.x *= 0.9;
         if (L.armR) L.armR.rotation.x *= 0.9;
       }

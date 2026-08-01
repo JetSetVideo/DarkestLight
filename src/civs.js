@@ -86,13 +86,38 @@ export const SPELLS = [
   { key: 'rain', shape: 'circle', name: 'Rain of Life', glyph: '◯', cost: 30,
     cast: 'Draw a closed circle on the ground',
     desc: 'Heals the flock, grows bushes, raises devotion. Radius & heal scale with Faith.' },
+  { key: 'shield', shape: 'circle_hold', name: 'Shield Bubble', glyph: '◎', cost: 45,
+    cast: 'Hold RMB and draw a firm circle over a village',
+    desc: 'Protective bubble absorbs meteor / fire damage for a short time.' },
   { key: 'lightning', shape: 'line', name: 'Lightning', glyph: '|', cost: 40,
     cast: 'Draw a straight line across the sky',
-    desc: 'Smites along the line. Damage & width scale with Faith.' },
+    desc: 'Smites along the line. Damage & width scale with Faith. Electrifies water.' },
+  { key: 'storm', shape: 'spiral', name: 'Tempest Spiral', glyph: '🌀', cost: 55,
+    cast: 'Draw a spiral (RMB miracle or spell tool)',
+    desc: 'Calls wind and rain; pushes clouds; topples light structures.' },
   { key: 'fireball', shape: 'zigzag', name: 'Fireball', glyph: '∿', cost: 50,
     cast: 'Draw a zigzag (at least 3 turns)',
-    desc: 'A falling fireball scorches a blast radius. Size & power scale with Faith.' },
+    desc: 'A falling fireball scorches a blast radius. Ignites dry flora.' },
+  { key: 'meteor', shape: 'star', name: 'Meteor', glyph: '✶', cost: 70,
+    cast: 'Draw a 5-point star',
+    desc: 'Impact digs a crater; size depends on terrain. Shockwave fells trees.' },
+  { key: 'earthquake', shape: 'zigzag_heavy', name: 'Earthquake', glyph: '〰', cost: 65,
+    cast: 'Draw a long jagged quake line',
+    desc: 'Fractures ground, fells trees, damages buildings along the fault.' },
+  { key: 'heal', shape: 'circle_soft', name: 'Healing Aura', glyph: '✚', cost: 35,
+    cast: 'Gentle circle over wounded kin',
+    desc: 'Benevolent cure — restores HP and clears panic.' },
 ];
+
+/** Fauna available to invoke per civ (biome filters applied at cast time). */
+export const INVOKE_FAUNA = {
+  chinese: ['panda', 'deer'],
+  vikings: ['wolf', 'deer'],
+  franks: ['boar', 'deer'],
+  orcs: ['warg', 'boar'],
+  elves: ['deer', 'wolf'],
+  aztecs: ['jaguar', 'snake'],
+};
 
 // ---------------------------------------------------------------------------
 // Branching tech tree. `req` = parent techs, `excludes` = the other branch of

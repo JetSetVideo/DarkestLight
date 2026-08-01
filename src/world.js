@@ -892,6 +892,25 @@ export class Cycles {
     this.snow.visible = false;
     scene.add(this.snow);
 
+    // Visible sinusoidal wind lines (Equilinox / B&W inspired)
+    const WL = 48;
+    this._windSegs = 28;
+    this.windLines = [];
+    for (let i = 0; i < WL; i++) {
+      const pts = [];
+      for (let s = 0; s <= this._windSegs; s++) pts.push(new THREE.Vector3());
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      const line = new THREE.Line(geo, new THREE.LineBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 0.22,
+      }));
+      line.userData.phase = Math.random() * Math.PI * 2;
+      line.userData.y0 = 4 + Math.random() * 14;
+      line.userData.z0 = (Math.random() - 0.5) * WORLD_SIZE * 0.9;
+      line.userData.x0 = (Math.random() - 0.5) * WORLD_SIZE * 0.9;
+      scene.add(line);
+      this.windLines.push(line);
+    }
+
     this.particlesEnabled = true;
   }
 
@@ -951,6 +970,33 @@ export class Cycles {
     this.sun.color.setHex(this.weather === 'heatwave' ? 0xffd9a0 : s === 3 ? 0xdde8ff : s === 2 ? 0xffe0b0 : 0xfff3d8);
 
     const windX = Math.cos(this.windAngle) * this.wind, windZ = Math.sin(this.windAngle) * this.wind;
+
+    // animate wind ribbons — parallel sinusoids morphing with strength
+    if (this.windLines) {
+      const amp = 0.4 + this.wind * 2.2;
+      const len = 18 + this.wind * 22;
+      for (const line of this.windLines) {
+        line.material.opacity = 0.08 + this.wind * 0.28;
+        const pos = line.geometry.attributes.position;
+        const ph = line.userData.phase + this.time * (0.6 + this.wind);
+        // drift anchors with wind
+        line.userData.x0 += windX * dt * 8;
+        line.userData.z0 += windZ * dt * 8;
+        if (Math.abs(line.userData.x0) > WORLD_SIZE * 0.55) line.userData.x0 *= -0.9;
+        if (Math.abs(line.userData.z0) > WORLD_SIZE * 0.55) line.userData.z0 *= -0.9;
+        for (let s = 0; s <= this._windSegs; s++) {
+          const t = s / this._windSegs;
+          const along = (t - 0.5) * len;
+          const px = line.userData.x0 + Math.cos(this.windAngle) * along;
+          const pz = line.userData.z0 + Math.sin(this.windAngle) * along;
+          const py = line.userData.y0 + Math.sin(ph + t * 6) * amp
+            + Math.sin(ph * 0.5 + t * 11) * amp * 0.35;
+          pos.setXYZ(s, px, py, pz);
+        }
+        pos.needsUpdate = true;
+      }
+    }
+
     this.rain.visible = this.raining && this.particlesEnabled;
     if (this.rain.visible) {
       const heavy = this.weather === 'storm';

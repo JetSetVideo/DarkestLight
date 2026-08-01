@@ -100,6 +100,24 @@ body { font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif; color: var
 
 /* ---------- HUD ---------- */
 #hud { position: fixed; inset: 0; z-index: 20; pointer-events: none; }
+#time-controls {
+  display: flex; align-items: center; gap: 4px; margin-right: 10px;
+  padding: 2px 6px; border: 1px solid rgba(232,192,100,.25); border-radius: 4px;
+}
+.tbtn {
+  background: transparent; border: 1px solid transparent; color: var(--muted, #a8b0c0);
+  font-size: 12px; padding: 2px 6px; cursor: pointer; line-height: 1.2;
+}
+.tbtn:hover { color: var(--gold); }
+.tbtn.selected { color: var(--gold); border-color: rgba(232,192,100,.45); }
+#hud-timescale { font-size: 11px; color: var(--gold); min-width: 36px; }
+.lexicon-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; justify-content: center; }
+.ltab {
+  background: #1a1e28; border: 1px solid rgba(232,192,100,.25); color: var(--text);
+  padding: 6px 12px; cursor: pointer; font: inherit; font-size: 13px;
+}
+.ltab.selected, .ltab:hover { border-color: var(--gold); color: var(--gold); }
+
 #hud-top {
   position: absolute; top: 0; left: 0; right: 0; height: 46px;
   display: flex; justify-content: space-between; align-items: center; padding: 0 16px;
@@ -167,6 +185,8 @@ body { font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif; color: var
 .bar { height: 5px; background: rgba(255,255,255,.1); margin: 2px 0 8px; }
 .bar i { display: block; height: 100%; background: var(--gold); }
 .dna { font-family: monospace; font-size: 11px; color: var(--dim); word-break: break-all; margin-top: 8px; }
+#hud-align { color: var(--gold); font-size: 12px; margin-left: 6px; opacity: .85; }
+#hud-focusq { color: #8ec8ff; font-size: 12px; margin-left: 6px; }
 
 .tech-item { border: 1px solid var(--line); padding: 12px; margin-bottom: 10px; }
 .tech-item .tname { color: var(--gold); font-size: 14px; }

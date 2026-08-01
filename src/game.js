@@ -3,10 +3,16 @@
 // spells, storms, monsters, relics, ghost-memory fog of war, score, timer
 // and win conditions.
 import * as THREE from 'three';
-import { CIVS, TECHS, BUILDINGS, FAVORS } from './civs.js';
+import { CIVS, TECHS, BUILDINGS, FAVORS, INVOKE_FAUNA } from './civs.js';
 import { Creature, Animal, Monster, Building, ResourceNode, Relic, Holdable, mixDNA } from './entities.js';
 import { Terrain, Cycles, WATER_Y, WORLD_SIZE, MAP_SHAPES } from './world.js';
 import { mulberry32, clamp, dist2, pick } from './util.js';
+import { isHybrid } from './dna.js';
+import {
+  FocusQueue, createAlignment, nudgeAlignment, alignmentLabel, spellPalette,
+  buildInfluenceOverlay, refreshInfluenceOverlay, buildLedgerStats,
+  cultureFromMedians, seedPropagationTick, applyCultureMarkers, avatarLearnTick,
+} from './systems.js';
 
 export class Game {
   constructor({ scene, camera, mode, playerCiv, enemyCiv, settings, onEnd, msg }) {
@@ -17,6 +23,9 @@ export class Game {
     this.onEnd = onEnd;
     this.msg = msg; // (text, worldPos?) => void
     this.YEAR_SEC = 9;
+    this.paused = false; // Focus Mode — set by main time controls
+    this.focusQueue = new FocusQueue();
+    this.alignment = createAlignment();
 
     const seed = (Math.random() * 1e9) | 0;
     this.rng = mulberry32(seed);
@@ -25,6 +34,8 @@ export class Game {
     this.terrain.fogEnabled = settings.fog && mode === 'battle';
     this.cycles = new Cycles(scene, seed);
     this.cycles.particlesEnabled = settings.particles;
+    this.influenceOverlay = buildInfluenceOverlay(scene);
+    this.influenceOn = false;
 
     this.civKeys = { player: playerCiv, enemy: enemyCiv };
     this.state = { player: this.freshState(), enemy: this.freshState() };
@@ -40,6 +51,7 @@ export class Game {
     this.favors = { player: {}, enemy: {} };
     this.lastSmiter = null;
     this.samples = [];       // population timeline for the recap chart
+    this.culture = { player: null, enemy: null };
 
     this.timeLeft = mode === 'battle' ? settings.matchlen * 60 : Infinity;
     this.elapsed = 0;
@@ -208,6 +220,76 @@ export class Game {
         if (!this.terrain.isWater(x, z)) { this.relics.push(new Relic(this, x, z)); break; }
       }
     }
+
+    // Avatar pet stub — giant creature that follows the player god's flock
+    this.spawnAvatar();
+    applyCultureMarkers(this);
+  }
+
+  spawnAvatar() {
+    const home = this.homeOf('player');
+    if (!home) return;
+    const type = CIVS[this.civOf('player')].animal || 'wolf';
+    const av = new Animal(this, type, home.pos.x + 6, home.pos.z + 4);
+    av.hp = 180;
+    av.isAvatar = true;
+    av.mesh.scale.setScalar(2.4);
+    av._avatarLearn = { diet: 0, combat: 0, moral: 0 };
+    this.animals.push(av);
+    this.avatar = av;
+    this.msg(`Your Avatar stirs — a great ${type}`, home.pos.clone());
+  }
+
+  /** Contextual group AI: flock idle adults into loose circles near leaders. */
+  groupAITick() {
+    for (const side of ['player', 'enemy']) {
+      const leader = this.creatures.find(c => c.side === side && (c.cls === 'king' || c.cls === 'queen'));
+      if (!leader) continue;
+      const idle = this.creatures.filter(c =>
+        c.side === side && c !== leader && c.lifeStage === 'adult' &&
+        (c.task === 'idle' || c.task === 'wander') &&
+        dist2(c.pos.x, c.pos.z, leader.pos.x, leader.pos.z) < 220);
+      if (idle.length < 3) continue;
+      // respectful arc in front of leader
+      idle.slice(0, 8).forEach((c, i) => {
+        const a = -0.9 + (i / Math.max(1, idle.length - 1)) * 1.8;
+        const r = 3.5;
+        c.task = 'wander';
+        c.target = new THREE.Vector3(
+          leader.pos.x + Math.sin(a + leader.mesh.rotation.y) * r,
+          0,
+          leader.pos.z + Math.cos(a + leader.mesh.rotation.y) * r,
+        );
+      });
+    }
+    // Avatar follows player camp / selected
+    if (this.avatar && this.avatar.hp > 0) {
+      const home = this.homeOf('player');
+      const sel = this.selected;
+      const tgt = (sel && sel.pos) ? sel.pos : home?.pos;
+      if (tgt && dist2(this.avatar.pos.x, this.avatar.pos.z, tgt.x, tgt.z) > 36) {
+        this.avatar.target = tgt.clone();
+      }
+    }
+    // ranks hold hands: pair nearby idle adults
+    for (const side of ['player', 'enemy']) {
+      const idle = this.creatures.filter(c =>
+        c.side === side && c.lifeStage === 'adult' &&
+        (c.task === 'idle' || c.task === 'wander') && !c.held);
+      for (let i = 0; i < idle.length - 1; i += 2) {
+        const a = idle[i], b = idle[i + 1];
+        if (dist2(a.pos.x, a.pos.z, b.pos.x, b.pos.z) < 16) {
+          a._holdHandsWith = b;
+          b._holdHandsWith = a;
+          a._pose = a._pose || 'idle';
+          // kneel when close to royalty
+          const royal = this.creatures.find(c =>
+            c.side === side && (c.cls === 'king' || c.cls === 'queen') &&
+            dist2(c.pos.x, c.pos.z, a.pos.x, a.pos.z) < 25);
+          if (royal) { a._pose = 'kneel'; b._pose = 'kneel'; }
+        }
+      }
+    }
   }
 
   // ---------------- queries (awareness system) ----------------
@@ -362,6 +444,10 @@ export class Game {
     this.scene.remove(c.mesh);
     this.state[c.side].deaths++;
     if (this.selected === c) this.setSelected(null);
+    if (cause === 'combat' && this.lastSmiter === 'player' && c.side !== 'player') {
+      this.alignment.kills++;
+      nudgeAlignment(this.alignment, -0.035);
+    }
     // clear references so survivors don't freeze on a dead target
     for (const o of this.creatures) {
       if (o.target === c) { o.target = null; if (o.task === 'attack' || o.task === 'hunt') o.task = 'idle'; }
@@ -490,7 +576,12 @@ export class Game {
     return st.wood >= (def.wood || 0) && st.rock >= (def.rock || 0) &&
       st.metal >= (def.metal || 0) && st.dp >= (def.dp || 0);
   }
-  build(side, type, x, z) {
+  build(side, type, x, z, opts = {}) {
+    if (this.paused && side === 'player' && !opts._focusFlush) {
+      this.focusQueue.push({ kind: 'build', side, type, x, z });
+      this.msg(`Queued ${type} (${this.focusQueue.length} in Focus)`);
+      return true;
+    }
     if (!this.canBuild(side, type)) return false;
     const def = BUILDINGS[type];
     const check = this.validateBuildSite(type, x, z);
@@ -529,27 +620,284 @@ export class Game {
     return Math.max(5, Math.round(base * myst * (1.15 - faith * 0.25)));
   }
 
-  castSpell(side, shape, worldPts) {
+  castSpell(side, shape, worldPts, opts = {}) {
+    // Focus Mode: queue while paused (except when flushing the queue)
+    if (this.paused && side === 'player' && !opts._focusFlush) {
+      this.focusQueue.push({ kind: 'spell', side, shape, worldPts: worldPts.map(p => p.clone()), opts });
+      this.msg(`Queued ${shape} (${this.focusQueue.length} in Focus)`);
+      return;
+    }
     const st = this.state[side];
-    const costs = { circle: 30, line: 40, zigzag: 50 };
-    const cost = this.spellCost(side, costs[shape]);
+    const costs = {
+      circle: opts.miracle ? 45 : 30,
+      circle_soft: 35,
+      line: 40, zigzag: 50, spiral: 55, star: 70,
+    };
+    const cost = this.spellCost(side, costs[shape] || 40);
     if (st.dp < cost) { if (side === 'player') this.msg(`Not enough Divine Points (${cost} ✦ needed)`); return; }
     st.dp -= cost;
     st.ach.spells++;
     const faith = this.faithLevel(side);
     const center = worldPts[Math.floor(worldPts.length / 2)];
-    if (shape === 'circle') this.spellRain(side, center, faith);
+    // alignment: harmful smites tilt wrathful; rain/heal tilt benevolent
+    if (side === 'player') {
+      if (shape === 'star' || shape === 'zigzag' || shape === 'line') nudgeAlignment(this.alignment, -0.04);
+      if (shape === 'circle' && !opts.miracle) nudgeAlignment(this.alignment, 0.05);
+      if (shape === 'circle_soft') nudgeAlignment(this.alignment, 0.07);
+    }
+    if (shape === 'circle_soft') this.spellHeal(side, center, faith);
+    else if (shape === 'circle') {
+      if (opts.miracle) this.spellShield(side, center, faith);
+      else this.spellRain(side, center, faith);
+    }
     if (shape === 'line') this.spellLightning(side, worldPts, faith);
-    if (shape === 'zigzag') this.spellFire(side, center, faith);
+    if (shape === 'zigzag') {
+      let pathLen = 0;
+      for (let i = 1; i < worldPts.length; i++)
+        pathLen += Math.hypot(worldPts[i].x - worldPts[i - 1].x, worldPts[i].z - worldPts[i - 1].z);
+      if (pathLen > 28) this.spellEarthquake(side, worldPts, faith);
+      else this.spellFire(side, center, faith);
+    }
+    if (shape === 'spiral') this.spellStorm(side, center, faith);
+    if (shape === 'star') this.spellMeteor(side, center, faith);
+  }
+
+  spellShield(side, center, faith = 1) {
+    const pal = spellPalette(side === 'player' ? this.alignment : null);
+    const r = 6 + faith * 5;
+    const ringGeo = new THREE.SphereGeometry(r, 16, 12);
+    const mesh = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({
+      color: pal.shield, transparent: true, opacity: 0.22, wireframe: true,
+    }));
+    mesh.position.set(center.x, this.terrain.getHeight(center.x, center.z) + 1, center.z);
+    this.scene.add(mesh);
+    this._shields = this._shields || [];
+    this._shields.push({ side, x: center.x, z: center.z, r, ttl: 12 + faith * 8 });
+    this.effects.push({
+      mesh, ttl: 12 + faith * 8,
+      update: (e, dt) => { e.mesh.rotation.y += dt; e.mesh.material.opacity = 0.12 + Math.sin(this.elapsed * 3) * 0.08; },
+    });
+    if (side === 'player') this.msg('Shield Bubble ◎', center.clone());
+  }
+
+  spellStorm(side, center, faith = 1) {
+    this.cycles.weather = 'storm';
+    this.cycles.weatherTimer = 18 + faith * 10;
+    this.cycles.wind = Math.min(1, 0.7 + faith * 0.3);
+    this.spellRain(side, center, faith * 0.7);
+    for (const b of this.buildings) {
+      if (b.type === 'hut' && dist2(b.pos.x, b.pos.z, center.x, center.z) < 400)
+        b.damage(15 * faith, null);
+    }
+    if (side === 'player') this.msg('Tempest Spiral 🌀', center.clone());
+  }
+
+  spellMeteor(side, center, faith = 1) {
+    this.lastSmiter = side;
+    const rock = this.terrain.rock[this.terrain.idx(center.x, center.z)] || 0.3;
+    const craterR = (3.5 + faith * 3) * (0.7 + rock * 0.6);
+    // skip if shielded
+    if ((this._shields || []).some(s => s.ttl > 0 && dist2(s.x, s.z, center.x, center.z) < s.r * s.r)) {
+      if (side === 'player') this.msg('Meteor absorbed by a shield!', center.clone());
+      return;
+    }
+    const pal = spellPalette(side === 'player' ? this.alignment : null);
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(1.2, 8, 6),
+      new THREE.MeshLambertMaterial({ color: pal.meteor, emissive: pal.meteorEmissive }));
+    const groundY = this.terrain.getHeight(center.x, center.z);
+    ball.position.set(center.x, 40, center.z);
+    this.scene.add(ball);
+    this.effects.push({
+      mesh: ball, ttl: 4,
+      update: (e, dt) => {
+        e.mesh.position.y -= dt * 28;
+        if (e.mesh.position.y <= groundY + 0.5 && !e._boom) {
+          e._boom = true; e.ttl = 0.5;
+          this.terrain.deform(center.x, center.z, craterR, -2.8);
+          // smoke ring
+          const smoke = new THREE.Mesh(new THREE.RingGeometry(1, craterR * 1.4, 24),
+            new THREE.MeshBasicMaterial({ color: 0x888888, transparent: true, opacity: 0.5, side: THREE.DoubleSide }));
+          smoke.rotation.x = -Math.PI / 2;
+          smoke.position.set(center.x, groundY + 0.4, center.z);
+          this.scene.add(smoke);
+          this.effects.push({ mesh: smoke, ttl: 3, update: (s, d) => { s.mesh.scale.multiplyScalar(1 + d * 0.4); s.mesh.material.opacity -= d * 0.15; } });
+          // shockwave trees outward
+          for (const r of this.resources.slice()) {
+            if (r.kind !== 'tree') continue;
+            const d = dist2(r.pos.x, r.pos.z, center.x, center.z);
+            if (d < craterR * craterR * 4) {
+              const ang = Math.atan2(r.pos.z - center.z, r.pos.x - center.x);
+              r.vel = r.vel || new THREE.Vector3();
+              r.vel.set(Math.cos(ang) * 12, 8, Math.sin(ang) * 12);
+              r.airborne = true;
+            }
+          }
+          for (const c of this.creatures.slice()) {
+            if (dist2(c.pos.x, c.pos.z, center.x, center.z) < craterR * craterR * 2.5) {
+              c.startPanic(center.clone());
+              c.damage(70 * faith, null);
+            }
+          }
+          for (const b of this.buildings.slice())
+            if (dist2(b.pos.x, b.pos.z, center.x, center.z) < craterR * craterR * 2)
+              b.damage(120 * faith, null);
+        }
+      },
+    });
+    if (side === 'player') this.msg(`Meteor ✶ crater ${craterR.toFixed(1)}`, center.clone());
+  }
+
+  spellEarthquake(side, worldPts, faith = 1) {
+    for (const p of worldPts) {
+      if (this.rng() < 0.35) this.terrain.deform(p.x, p.z, 2.5, -0.6 * faith);
+    }
+    const a = worldPts[0], b = worldPts[worldPts.length - 1];
+    for (const r of this.resources.slice()) {
+      if (r.kind === 'tree' && dist2(r.pos.x, r.pos.z, a.x, a.z) < 900) {
+        // near fault
+        const abx = b.x - a.x, abz = b.z - a.z, len2 = abx * abx + abz * abz || 1;
+        const t = clamp(((r.pos.x - a.x) * abx + (r.pos.z - a.z) * abz) / len2, 0, 1);
+        if (dist2(r.pos.x, r.pos.z, a.x + abx * t, a.z + abz * t) < 36) this.removeResource(r);
+      }
+    }
+    for (const bl of this.buildings.slice()) {
+      const abx = b.x - a.x, abz = b.z - a.z, len2 = abx * abx + abz * abz || 1;
+      const t = clamp(((bl.pos.x - a.x) * abx + (bl.pos.z - a.z) * abz) / len2, 0, 1);
+      if (dist2(bl.pos.x, bl.pos.z, a.x + abx * t, a.z + abz * t) < 64)
+        bl.damage(50 * faith, null);
+    }
+    if (side === 'player') this.msg('Earthquake 〰', a.clone());
+  }
+
+  invokeFauna(side, x, z, opts = {}) {
+    if (this.paused && side === 'player' && !opts._focusFlush) {
+      this.focusQueue.push({ kind: 'invoke', side, x, z });
+      this.msg(`Queued invoke (${this.focusQueue.length} in Focus)`);
+      return true;
+    }
+    const st = this.stateOf(side);
+    const faith = this.faithLevel(side);
+    const cost = this.mode === 'construction' && side === 'player' ? 0 : 25;
+    if (st.dp < cost) { this.msg(`Need ${cost} ✦ to invoke`); return false; }
+    if (faith < 0.25 && this.mode === 'battle') { this.msg('Faith too weak to call beasts'); return false; }
+    const civ = this.civOf(side);
+    const pool = INVOKE_FAUNA[civ] || ['deer'];
+    const bio = this.terrain.getBiomeId?.(x, z) ?? 9;
+    const wet = this.terrain.isWater(x, z);
+    let type;
+    if (wet) {
+      type = 'fish';
+    } else {
+      type = pick(this.rng, pool);
+      if (bio === 7 || bio === 0) type = pool.find(t => t === 'snake' || t === 'jaguar') || type;
+      if (bio === 5 || bio === 6) type = pool.includes('snake') ? 'snake' : type;
+      if (bio === 13 || bio === 8) type = pool.find(t => t === 'wolf' || t === 'deer') || type;
+      if (bio === 4 || bio === 10) type = pool.find(t => t === 'jaguar' || t === 'boar' || t === 'deer') || type;
+    }
+    st.dp -= cost;
+    this.animals.push(new Animal(this, type, x, z));
+    if (side === 'player') {
+      const biomeName = this.terrain.getBiomeKey?.(x, z) || 'wilds';
+      this.msg(`Invoked ${type} (${biomeName})`, new THREE.Vector3(x, 0, z));
+    }
+    return true;
+  }
+
+  spawnSeedling(x, z, kind = 'oak') {
+    this.resources.push(new ResourceNode(this, 'tree', x, z, kind, true));
+  }
+
+  focusPlant(x, z, kind, opts = {}) {
+    if (this.paused && !opts._focusFlush) {
+      this.focusQueue.push({ kind: 'plant', x, z, kind });
+      this.msg(`Queued plant (${this.focusQueue.length} in Focus)`);
+      return;
+    }
+    if (this.terrain.isWater(x, z)) return;
+    const cost = this.mode === 'battle' ? 5 : 0;
+    if (this.state.player.dp < cost) return;
+    this.state.player.dp -= cost;
+    this.spawnSeedling(x, z, kind || ['oak', 'pine', 'cherry'][(this.rng() * 3) | 0]);
+  }
+
+  toggleInfluence() {
+    this.influenceOn = !this.influenceOn;
+    this.influenceOverlay.visible = this.influenceOn;
+    if (this.influenceOn) refreshInfluenceOverlay(this.influenceOverlay, this, 'player');
+    this.msg(this.influenceOn ? 'Influence map shown' : 'Influence map hidden');
+  }
+
+  flushFocusQueue() {
+    const n = this.focusQueue.flush(this);
+    if (n) this.msg(`Focus Mode: ${n} actions unleashed`);
+  }
+
+  recordGodTouch(kind) {
+    // pet / slap from cursor — moral alignment
+    if (kind === 'pet') { this.alignment.pets++; nudgeAlignment(this.alignment, 0.06); }
+    if (kind === 'slap') { this.alignment.slaps++; nudgeAlignment(this.alignment, -0.05); }
+  }
+
+  ledgerStats() { return buildLedgerStats(this, 'player'); }
+  alignmentInfo() {
+    return { value: this.alignment.value, label: alignmentLabel(this.alignment.value) };
+  }
+
+  tryScoop(x, z) {
+    // scoop wood / food / water (bubble) for stockpiles
+    let wood = 0, food = 0, water = 0;
+    if (this.terrain.isWater(x, z)) water = 8 + ((this.rng() * 6) | 0);
+    for (const h of this.holdables) {
+      if (!h.heldBy && dist2(h.pos.x, h.pos.z, x, z) < 16) {
+        wood += h.amount || 1;
+        this.removeHoldable(h);
+      }
+    }
+    for (const r of this.resources) {
+      if (dist2(r.pos.x, r.pos.z, x, z) > 20) continue;
+      if (r.kind === 'bush') { food += r.harvest(4); }
+      if (r.kind === 'tree') { wood += r.harvest(2); }
+    }
+    if (wood + food + water < 1) return null;
+    if (water >= wood && water >= food) return { kind: 'water', amount: Math.round(water) };
+    const kind = wood >= food ? 'wood' : 'food';
+    const amount = Math.round(kind === 'wood' ? wood : food);
+    return { kind, amount };
+  }
+
+  dropScoop(side, scoop, x, z) {
+    if (!scoop) return;
+    const home = this.homeOf(side);
+    const nearHome = home && dist2(home.pos.x, home.pos.z, x, z) < 100;
+    const st = this.stateOf(side);
+    if (scoop.kind === 'water') {
+      // water bubble → fertility stamp around drop + slight food via farms
+      this.terrain.stampDirt?.(x, z, 3.5, 0.15);
+      for (const r of this.resources) {
+        if (r.kind === 'bush' && dist2(r.pos.x, r.pos.z, x, z) < 64) r.regrow(6);
+      }
+      if (nearHome) st.food = (st.food || 0) + Math.floor(scoop.amount * 0.35);
+      if (side === 'player') this.msg(`Water bubble nourished the land (+${scoop.amount})`, new THREE.Vector3(x, 0, z));
+      return;
+    }
+    if (nearHome) {
+      st[scoop.kind] = (st[scoop.kind] || 0) + scoop.amount;
+      this.trackGather(side, { food: scoop.kind === 'food' ? scoop.amount : 0, wood: scoop.kind === 'wood' ? scoop.amount : 0 });
+      if (side === 'player') this.msg(`Stockpiled +${scoop.amount} ${scoop.kind}`, home.pos.clone());
+    } else if (side === 'player') {
+      this.msg('Drop nearer the campfire to stockpile');
+      st[scoop.kind] = (st[scoop.kind] || 0) + Math.floor(scoop.amount * 0.5);
+    }
   }
 
   spellRain(side, center, faith = 1) {
     const bloom = this.hasTech(side, 'lifebloom');
     const radius = 8 + faith * 8;
     const heal = (bloom ? 30 : 15) * faith;
+    const pal = spellPalette(side === 'player' ? this.alignment : null);
     const ringGeo = new THREE.RingGeometry(1, radius, 32);
     ringGeo.rotateX(-Math.PI / 2);
-    const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0x66ccff, transparent: true, opacity: 0.5, side: THREE.DoubleSide }));
+    const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: pal.rain, transparent: true, opacity: 0.5, side: THREE.DoubleSide }));
     ring.position.set(center.x, this.terrain.getHeight(center.x, center.z) + 0.3, center.z);
     this.scene.add(ring);
     this.effects.push({ mesh: ring, ttl: 2, update: (e, dt) => { e.mesh.scale.multiplyScalar(1 + dt); e.mesh.material.opacity -= dt * 0.25; } });
@@ -562,10 +910,48 @@ export class Game {
         c.beliefs[side] = clamp(c.beliefs[side] + (bloom ? 18 : 9) * faith, 0, 100);
       }
     }
-    if (side === 'player') this.msg(`Rain of life ◯ (faith ${Math.round(faith * 100)}%)`, center.clone());
+    if (side === 'player') {
+      this.alignment.heals++;
+      nudgeAlignment(this.alignment, 0.03);
+      this.msg(`Rain of life ◯ (faith ${Math.round(faith * 100)}%)`, center.clone());
+    }
   }
 
-  lightningBoltMesh(a, b) {
+  /** Healing Aura — soft circle; cures panic and restores HP without weather change. */
+  spellHeal(side, center, faith = 1) {
+    const radius = 6 + faith * 5;
+    const heal = 22 * faith;
+    const pal = spellPalette(side === 'player' ? this.alignment : null);
+    const ringGeo = new THREE.RingGeometry(0.5, radius, 28);
+    ringGeo.rotateX(-Math.PI / 2);
+    const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({
+      color: pal.heal || pal.rain || 0xa8e0ff, transparent: true, opacity: 0.55, side: THREE.DoubleSide,
+    }));
+    ring.position.set(center.x, this.terrain.getHeight(center.x, center.z) + 0.35, center.z);
+    this.scene.add(ring);
+    this.effects.push({
+      mesh: ring, ttl: 2.2,
+      update: (e, dt) => { e.mesh.rotation.z += dt; e.mesh.material.opacity -= dt * 0.22; },
+    });
+    const r2 = radius * radius;
+    for (const c of this.creatures) {
+      if (c.side !== side && side === 'player') continue;
+      if (dist2(c.pos.x, c.pos.z, center.x, center.z) < r2 * 2) {
+        c.hp = Math.min(c.maxHp, c.hp + heal);
+        c.fear = Math.max(0, c.fear - 0.5);
+        c.alert = 0;
+        c.energy = Math.min(c.maxEnergy, c.energy + 15);
+        c.beliefs[side] = clamp(c.beliefs[side] + 12 * faith, 0, 100);
+      }
+    }
+    if (side === 'player') {
+      this.alignment.heals++;
+      nudgeAlignment(this.alignment, 0.05);
+      this.msg(`Healing Aura ✚`, center.clone());
+    }
+  }
+
+  lightningBoltMesh(a, b, color = 0xffffff) {
     const points = [];
     const N = 10;
     for (let i = 0; i <= N; i++) {
@@ -577,7 +963,7 @@ export class Game {
       points.push(new THREE.Vector3(x, this.terrain.getHeight(x, z) + 0.2, z));
     }
     const geo = new THREE.BufferGeometry().setFromPoints(points);
-    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffffff }));
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color }));
     this.scene.add(line);
     this.effects.push({ mesh: line, ttl: 0.5, update: () => {} });
   }
@@ -585,7 +971,8 @@ export class Game {
   spellLightning(side, pts, faith = 1) {
     this.lastSmiter = side;
     const a = pts[0], b = pts[pts.length - 1];
-    this.lightningBoltMesh(a, b);
+    const pal = spellPalette(side === 'player' ? this.alignment : null);
+    this.lightningBoltMesh(a, b, pal.lightning);
     const mul = (this.hasTech(side, 'stormcalling') ? 1.5 : 1) * faith;
     const width = 9 * (0.7 + faith * 0.5);
 
@@ -602,6 +989,18 @@ export class Game {
     }
     for (const m of [...this.monsters]) if (hit(m)) m.damage(80 * mul, null);
     for (const bl of [...this.buildings]) if (hit(bl)) bl.damage(60 * mul, null);
+    // Electrify water / fish along the bolt
+    for (const an of [...this.animals]) {
+      if (an.aquatic && hit(an)) an.damage(99, null);
+    }
+    for (let i = 0; i < pts.length; i += 3) {
+      const p = pts[i];
+      if (this.terrain.isWater(p.x, p.z)) {
+        for (const c of this.creatures)
+          if (dist2(c.pos.x, c.pos.z, p.x, p.z) < 36 && this.terrain.isWater(c.pos.x, c.pos.z))
+            c.damage(22 * mul, null);
+      }
+    }
     for (const c of this.creatures) {
       if (dist2(c.pos.x, c.pos.z, a.x, a.z) < 500) {
         c.fear = Math.min(1, c.fear + 0.5);
@@ -634,8 +1033,9 @@ export class Game {
     const mul = (this.hasTech(side, 'stormcalling') ? 1.5 : 1) * faith;
     const blastR = 25 + faith * 20;
     const ballSize = 0.7 + faith * 0.5;
+    const pal = spellPalette(side === 'player' ? this.alignment : null);
     const ball = new THREE.Mesh(new THREE.SphereGeometry(ballSize, 8, 6),
-      new THREE.MeshLambertMaterial({ color: 0xff6a20, emissive: 0xcc4400 }));
+      new THREE.MeshLambertMaterial({ color: pal.fire, emissive: pal.fireEmissive }));
     const groundY = this.terrain.getHeight(center.x, center.z);
     ball.position.set(center.x, 26, center.z);
     this.scene.add(ball);
@@ -688,9 +1088,13 @@ export class Game {
 
     this.cycles.update(dt, this.camera, this.rng);
     this.terrain.setSeasonTint(this.cycles.snowAmt, this.cycles.autumnAmt);
-    // feed sun direction into ground / socle shaders
     const sunDir = this.cycles.sun.position.clone().normalize();
     this.terrain.update(dt, sunDir);
+    // decay shields
+    if (this._shields) {
+      for (const s of this._shields) s.ttl -= dt;
+      this._shields = this._shields.filter(s => s.ttl > 0);
+    }
 
     // storms hurl wild lightning (rare)
     if (this.cycles.weather === 'storm' && this.rng() < dt * 0.05) {
@@ -766,6 +1170,18 @@ export class Game {
     if (this._aiTimer <= 0) { this._aiTimer = 5; this.aiGodTick(); }
     this._chiefTimer -= dt;
     if (this._chiefTimer <= 0) { this._chiefTimer = 45; this.chiefTick(); }
+    this._groupT = (this._groupT || 0) - dt;
+    if (this._groupT <= 0) { this._groupT = 4.5; this.groupAITick(); }
+
+    seedPropagationTick(this, dt);
+    avatarLearnTick(this, dt);
+    this._cultureT = (this._cultureT || 0) - dt;
+    if (this._cultureT <= 0) { this._cultureT = 12; applyCultureMarkers(this); }
+    this._inflT = (this._inflT || 0) - dt;
+    if (this.influenceOn && this._inflT <= 0) {
+      this._inflT = 1.2;
+      refreshInfluenceOverlay(this.influenceOverlay, this, 'player');
+    }
 
     // entity visibility + ghost memory (last state seen)
     if (this.terrain.fogEnabled) {
@@ -842,36 +1258,59 @@ export class Game {
       const home = this.homeOf(side);
       if (!home) continue;
       const st = this.stateOf(side);
-      // clear stale lover flags
       for (const c of this.creatures) {
         if (c.side === side && c.lover && c._loverUntil && this.elapsed > c._loverUntil) c.lover = null;
       }
       if (this.popOf(side) >= this.popCap(side) || st.food < 20) continue;
       const near = this.creatures.filter(c => c.side === side && c.lifeStage === 'adult' &&
         c.mateCooldown <= 0 && dist2(c.pos.x, c.pos.z, home.pos.x, home.pos.z) < 90);
-      const male = near.find(c => c.sex === 'M');
-      const female = near.find(c => c.sex === 'F');
+      // Prefer cross-race pairs when both present (race mixing)
+      let male = null, female = null;
+      const males = near.filter(c => c.sex === 'M');
+      const females = near.filter(c => c.sex === 'F');
+      for (const m of males) {
+        const f = females.find(ff => (ff.raceKey || ff.civKey) !== (m.raceKey || m.civKey));
+        if (f) { male = m; female = f; break; }
+      }
+      if (!male) { male = males[0]; female = females[0]; }
       if (male && female) {
-        // hearts while they meet
+        // Fertility gene gates chance to conceive
+        const fert = ((male.dna.fertility ?? 0.5) + (female.dna.fertility ?? 0.5)) * 0.5;
+        if (this.rng() > 0.35 + fert * 0.55) {
+          male.mateCooldown = 8; female.mateCooldown = 8;
+          continue;
+        }
         male.lover = female; female.lover = male;
         male.refreshStatusIcon?.(); female.refreshStatusIcon?.();
         st.food -= 15;
         st.ach.births++;
         male.mateCooldown = 25; female.mateCooldown = 25;
-        const dna = mixDNA(this.rng, male.dna, female.dna);
+        const hx = home.pos.x, hz = home.pos.z;
+        const bio = this.terrain.getBiomeId?.(hx, hz) ?? 9;
+        const hints = {
+          hot: bio === 7 || bio === 10 || bio === 15,
+          cold: bio === 0 || bio === 1 || bio === 8 || bio === 13,
+          wet: bio === 5 || bio === 6 || bio === 4,
+        };
+        const dna = mixDNA(this.rng, male, female, hints);
+        const hybrid = isHybrid(dna._genome);
         const royalParent = [male, female].some(p =>
           ['king', 'queen'].includes(p.cls) || p.titles.includes('prince') || p.titles.includes('princess'));
         const r = this.rng();
         const cls = r < 0.38 ? 'gatherer' : r < 0.58 ? 'hunter' : r < 0.72 ? 'farmer'
           : r < 0.84 ? 'knight' : r < 0.92 ? 'shaman' : 'philosopher';
         const baby = new Creature(this, side, cls,
-          home.pos.x + (this.rng() - 0.5) * 3, home.pos.z + (this.rng() - 0.5) * 3, dna, 0, []);
+          hx + (this.rng() - 0.5) * 3, hz + (this.rng() - 0.5) * 3, dna, 0, []);
         if (royalParent) {
           baby.titles.push(baby.sex === 'M' ? 'prince' : 'princess');
           baby.rebuildMesh();
         }
         this.creatures.push(baby);
-        if (side === 'player') this.msg(`${baby.name} was born (${baby.displayTitle})`, home.pos.clone());
+        if (side === 'player') {
+          this.msg(hybrid
+            ? `${baby.name} born — hybrid of ${male.raceKey} × ${female.raceKey}`
+            : `${baby.name} was born (${baby.displayTitle})`, home.pos.clone());
+        }
         male._loverUntil = this.elapsed + 2.8;
         female._loverUntil = this.elapsed + 2.8;
       }
@@ -923,6 +1362,7 @@ export class Game {
       if (c.beliefs[other] > 78 && c.beliefs[other] > c.beliefs[c.side] + 12) {
         c.releaseClaim();
         c.side = other;
+        // cultural allegiance flips; genetic raceKey stays for race mixing
         c.civKey = this.civOf(other);
         c.beliefs = { player: other === 'player' ? 70 : 25, enemy: other === 'enemy' ? 70 : 25 };
         this.state[other].conversions++;
@@ -1031,10 +1471,11 @@ export class Game {
       ...this.resources.map(r => r.mesh), ...this.relics.map(r => r.mesh),
       ...this.holdables.map(h => h.mesh),
       ...this.effects.map(e => e.mesh), ...this.ghosts.values(),
-      this.selRing,
+      this.selRing, this.influenceOverlay,
       this.terrain.mesh, this.terrain.water, this.terrain.socle,
       this.cycles.sun, this.cycles.sun.target, this.cycles.ambient, this.cycles.hemi,
       this.cycles.rain, this.cycles.snow,
+      ...(this.cycles.windLines || []),
     ];
     for (const m of all) if (m) this.scene.remove(m);
     this.scene.fog = null;

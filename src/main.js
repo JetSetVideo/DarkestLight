@@ -36,6 +36,27 @@ window.addEventListener('resize', () => {
 
 let game = null;
 
+/** Simulation clock — default slow for observation (Equilinox-style). */
+const TIME_PRESETS = { pause: 0, play: 0.45, fast: 1.25, faster: 2.5 };
+let timeMode = 'play';
+let timeScale = TIME_PRESETS.play;
+
+function setTimeMode(mode) {
+  const wasPaused = timeScale === 0;
+  timeMode = mode;
+  timeScale = TIME_PRESETS[mode] ?? 0.45;
+  document.querySelectorAll('#time-controls .tbtn').forEach(b => b.classList.remove('selected'));
+  const id = { pause: 'btn-time-pause', play: 'btn-time-play', fast: 'btn-time-fast', faster: 'btn-time-faster' }[mode];
+  document.getElementById(id)?.classList.add('selected');
+  const label = document.getElementById('hud-timescale');
+  if (label) label.textContent = timeScale === 0 ? '❚❚' : `×${timeScale.toFixed(2)}`;
+  if (game) {
+    game.paused = timeScale === 0;
+    // Focus Mode: flush queued miracles when leaving pause
+    if (wasPaused && timeScale > 0) game.flushFocusQueue();
+  }
+}
+
 const ui = new UI({
   onStartGame: (mode, civKey) => startGame(mode, civKey),
   onQuitGame: () => endGame(),
@@ -47,7 +68,42 @@ const ui = new UI({
   onSelectBuild: (type) => { cursor.buildType = type; ui.msg(`Placing: ${type} — green pad = valid site`); },
   onCenterCamera: (pos) => { rig.target.set(pos.x, pos.y, pos.z); },
   onKeybindsChange: (binds) => { keybinds = binds; rig.setKeybinds(binds); },
+  onInvoke: () => { cursor.tool = 'invoke'; ui.msg('Invoke: click land to summon biome-fit fauna'); },
 });
+
+document.getElementById('btn-time-pause')?.addEventListener('click', () => setTimeMode('pause'));
+document.getElementById('btn-time-play')?.addEventListener('click', () => setTimeMode('play'));
+document.getElementById('btn-time-fast')?.addEventListener('click', () => setTimeMode('fast'));
+document.getElementById('btn-time-faster')?.addEventListener('click', () => setTimeMode('faster'));
+// Space toggles pause/play; [ / ] cycle slower / faster (avoids tool keybinds 1–6)
+window.addEventListener('keydown', (e) => {
+  if (!game || game.over) return;
+  const tag = e.target?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (e.code === 'Space') {
+    e.preventDefault();
+    setTimeMode(timeScale === 0 ? 'play' : 'pause');
+  }
+  const order = ['pause', 'play', 'fast', 'faster'];
+  if (e.key === '[') {
+    const i = Math.max(0, order.indexOf(timeMode) - 1);
+    setTimeMode(order[i]);
+  }
+  if (e.key === ']') {
+    const i = Math.min(order.length - 1, order.indexOf(timeMode) + 1);
+    setTimeMode(order[i]);
+  }
+});
+document.getElementById('btn-invoke')?.addEventListener('click', () => {
+  cursor.tool = 'invoke';
+  document.querySelectorAll('#hud-tools .tool').forEach(b => b.classList.toggle('selected', b.dataset.tool === 'invoke'));
+  ui.msg('Invoke: click valid ground — costs ✦, needs faith & matching biome');
+});
+document.getElementById('btn-influence')?.addEventListener('click', () => {
+  if (!game) return;
+  game.toggleInfluence();
+});
+setTimeMode('play');
 
 const cursor = new GodCursor({
   canvas, camera, rig,
@@ -118,12 +174,19 @@ if (params.get('clicktest')) {
 let last = performance.now();
 function loop(now) {
   requestAnimationFrame(loop);
-  const dt = Math.min((now - last) / 1000, 0.1);
+  const raw = Math.min((now - last) / 1000, 0.1);
   last = now;
+  // camera always responsive; simulation respects time scale
   if (game && !game.over) {
-    rig.update(dt, ui.settings.camspeed, game.terrain);
-    game.update(dt);
-    ui.updateHUD(game);
+    rig.update(raw, ui.settings.camspeed, game.terrain);
+    const simDt = raw * timeScale;
+    if (simDt > 0) game.update(simDt);
+    else {
+      // paused: still refresh HUD / wind viz uniforms lightly
+      game.terrain?.update?.(0, game.cycles?.sun?.position);
+      ui.updateHUD(game);
+    }
+    if (simDt > 0) ui.updateHUD(game);
   }
   renderer.render(scene, camera);
 }
