@@ -11,6 +11,8 @@ import { RiverSystem } from './generation/rivers.js';
 import { RoadNetwork } from './engine/roads.js';
 import { eraOf, bestToolFor, COMPANIONS, canTame, revealedResources } from './ai/crafting.js';
 import { effectsFor, quadrantLabel, nudge } from './engine/alignment.js';
+import { QuestEngine } from './quests/questEngine.js';
+import { victoryPoints, victoryBreakdown, proximityModifiers } from './engine/victory.js';
 import { mulberry32, clamp, dist2, pick } from './util.js';
 import { isHybrid } from './dna.js';
 import {
@@ -60,6 +62,16 @@ export class Game {
     // tools) undercount badly because companions die and units are replaced —
     // these totals are what the ledger and the verification script read.
     this.civStats = { tamed: 0, tameAttempts: 0, toolsCrafted: 0 };
+
+    // Phase 5 — quest engine + counters the objectives measure against.
+    this.spellsCast = 0;
+    this.riverMoves = 0;
+    this.terrainEdits = 0;
+    this.quests = new QuestEngine(this);
+    this.quests.seed('player');
+    this._questTimer = 3;
+    // AI gods play by the same alignment rules the player does.
+    this.enemyAlignment = createAlignment();
 
     this.influenceOverlay = buildInfluenceOverlay(scene);
     this.influenceOn = false;
@@ -525,6 +537,58 @@ export class Game {
     r.amount = 0; // so any claimant abandons it
     this.scene.remove(r.mesh);
   }
+  // ===================== PHASE 5: RIVAL GODS & VICTORY ======================
+
+  /**
+   * A rival god acts: it picks a sigil consistent with the personality its own
+   * alignment has drifted into, pays divine power for it, and drifts further.
+   * Uses the same castSpell path as the player, so any spell balance change
+   * applies to both.
+   */
+  aiGodCast(side, st) {
+    const align = this.enemyAlignment;
+    if (!align || (st.dp ?? 0) < 60) return;
+    if (this.rng() > 0.35) return;   // gods are not twitchy
+
+    const wrathful = align.value < 0;
+    // Wrathful gods smite; benevolent ones tend their flock.
+    const table = wrathful
+      ? [['zigzag', 3], ['star', 2], ['line', 3], ['spiral', 2]]
+      : [['circle', 3], ['circle_soft', 3], ['line', 1]];
+    let tot = 0;
+    for (const [, w] of table) tot += w;
+    let r = this.rng() * tot;
+    let shape = table[0][0];
+    for (const [name, w] of table) { r -= w; if (r <= 0) { shape = name; break; } }
+
+    // Aim at the player's settlement when hostile, its own when nurturing.
+    const anchor = wrathful ? this.homeOf('player') : this.homeOf(side);
+    if (!anchor) return;
+    const pts = [0, 1, 2].map((i) => new THREE.Vector3(
+      anchor.pos.x + (this.rng() - 0.5) * 8 + i,
+      0,
+      anchor.pos.z + (this.rng() - 0.5) * 8,
+    ));
+
+    this.castSpell(side, shape, pts, {});
+
+    // The rival's own alignment drifts from what it chooses to do.
+    const CHAOTIC = { zigzag: -0.05, spiral: -0.04, star: -0.035 };
+    const ORDERLY = { circle_soft: 0.05, circle: 0.03 };
+    nudge(align, {
+      good: (shape === 'circle' || shape === 'circle_soft') ? 0.05 : -0.04,
+      order: CHAOTIC[shape] ?? ORDERLY[shape] ?? 0,
+    });
+    this.aiCasts = (this.aiCasts || 0) + 1;
+  }
+
+  /** Victory-point totals and their itemised breakdown. */
+  victoryPointsOf(side) { return victoryPoints(this, side); }
+  victoryBreakdownOf(side) { return victoryBreakdown(this, side); }
+
+  /** Resource-stream multipliers from settlement layout. */
+  proximityFor(side) { return proximityModifiers(this, side); }
+
   // ===================== PHASE 4: DIVINE CONSEQUENCE ========================
 
   /** Current gameplay effects of the god's alignment. */
@@ -856,6 +920,7 @@ export class Game {
       const CHAOTIC = { zigzag: -0.05, spiral: -0.04, star: -0.035, wave: -0.02 };
       const ORDERLY = { circle_soft: 0.05, circle: 0.03 };
       nudge(this.alignment, { order: CHAOTIC[shape] ?? ORDERLY[shape] ?? 0 });
+      this.spellsCast++;   // Phase 5: CastSpell objectives measure this
     }
     if (shape === 'circle_soft') this.spellHeal(side, center, faith);
     else if (shape === 'circle') {
@@ -1315,6 +1380,10 @@ export class Game {
     }
     this.ecology.tick(dt);
 
+    // Phase 5: quests measure cumulative counters, so a slow tick suffices.
+    this._questTimer -= dt;
+    if (this._questTimer <= 0) { this._questTimer = 2; this.quests.tick(); }
+
     // Phase 4: chaotic gods destabilise the island. Landscape-scale events,
     // so they resolve on their own slow timer.
     this._chaosTimer = (this._chaosTimer ?? 5) - dt;
@@ -1625,6 +1694,12 @@ export class Game {
       this.unlockTech(side, t.key);
     }
 
+    // Phase 5: the AI god plays by the player's rules — it casts gesture
+    // spells from the same table, pays the same divine power, and its choices
+    // move its own alignment on both axes. A rival god that ignored alignment
+    // would be playing a different game.
+    this.aiGodCast(side, st);
+
     const count = (type) => this.buildings.filter(b => b.side === side && b.type === type && !b.constructing).length;
     const spotNear = () => {
       for (let t = 0; t < 20; t++) {
@@ -1685,13 +1760,29 @@ export class Game {
     if (ePop === 0 && this.elapsed > 5) result = { won: true, how: this.state.player.conversions >= 5 ? 'The enemy flock now sings your name.' : 'The enemy civilization was exterminated.' };
     else if (pPop === 0 && this.elapsed > 5) result = { won: false, how: 'Your civilization has fallen.' };
     else if (this.timeLeft <= 0) {
-      const ps = this.scoreOf('player'), es = this.scoreOf('enemy');
-      result = { won: ps >= es, how: `Time is up — final judgement by score (${ps} vs ${es}).` };
+      // Phase 5: judged on 4X victory points (land, population, era, quests,
+      // faith) rather than the old kill/tech tally, so cultivating an island
+      // is a route to victory and not only winning fights.
+      const pv = victoryPoints(this, 'player'), ev = victoryPoints(this, 'enemy');
+      result = {
+        won: pv >= ev,
+        how: `Time is up — judged on victory points (${pv} vs ${ev}).`,
+        breakdown: { player: victoryBreakdown(this, 'player'), enemy: victoryBreakdown(this, 'enemy') },
+      };
     }
     if (result) {
       this.over = true;
       result.score = this.scoreOf('player');
       result.enemyScore = this.scoreOf('enemy');
+      // Phase 5 totals travel with every result, not just timeout victories,
+      // so the end screen can always show the 4X breakdown.
+      result.vp = victoryPoints(this, 'player');
+      result.enemyVp = victoryPoints(this, 'enemy');
+      result.breakdown = result.breakdown || {
+        player: victoryBreakdown(this, 'player'),
+        enemy: victoryBreakdown(this, 'enemy'),
+      };
+      result.quests = { completed: this.quests.stats.completed, log: this.quests.log };
       result.state = this.state.player;
       result.enemyState = this.state.enemy;
       result.pop = pPop;

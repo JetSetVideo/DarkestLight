@@ -160,6 +160,7 @@ export class RiverSystem {
     grab.river.points[grab.index].x = toX;
     grab.river.points[grab.index].z = toZ;
     grab.river.carve(this.terrain);
+    this.moves = (this.moves || 0) + 1;
     return grab.river;
   }
 

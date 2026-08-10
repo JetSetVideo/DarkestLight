@@ -708,6 +708,7 @@ export class Terrain {
     pos.needsUpdate = true;
     this.geo.computeVertexNormals();
     this._colDirty = true;
+    this.edits = (this.edits || 0) + 1; // Phase 5: TerrainModified trigger
   }
 
   addWear(x, z, amt) {
