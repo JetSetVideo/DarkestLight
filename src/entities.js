@@ -11,6 +11,9 @@ import {
   genomeFromLegacy, isHybrid, dnaLociTable,
 } from './dna.js';
 import * as THREE from 'three';
+import { scheduledIntent } from './ai/schedule.js';
+import { COMPANIONS, canTame, canAfford, payFor } from './ai/crafting.js';
+import { PAVE_COST_WOOD } from './engine/roads.js';
 
 /**
  * Back-link a mesh tree to its entity for picking (cursor.js walks up parents
@@ -101,6 +104,12 @@ export class Creature {
     this._baseScale = 0.68;
     this.holding = null;                     // holdable item (stick etc.)
     this.lover = null;                       // partner when mating
+    // --- Phase 3 attributes ---
+    this.tool = null;                        // equipped crafted tool
+    this.companion = null;                   // tamed animal following this unit
+    this.morale = 60;                        // 0..100, sways with events
+    this.willpower = 35 + (this.dna.willpower ?? this.dna.intelligence ?? 0.5) * 55;
+    this.family = { parents: [], children: [], spouse: null };
     this.rebuildMesh(x, z);
     this.walkPhase = game.rng() * 10;
     this._iconT = 0;
@@ -217,10 +226,15 @@ export class Creature {
     else this.sprinting = false;
     // exhaustion slows you
     if (this.energy < 15) s *= 0.7;
-    // Phase 1: loose desertified sand is hard going. Paved roads will later
-    // cancel this malus (Phase 3).
-    const eco = this.game.ecology;
-    if (eco) s *= eco.speedFactorAt(this.mesh.position.x, this.mesh.position.z);
+    // Terrain underfoot. A paved road cancels the desertification malus
+    // outright and adds its own bonus — engineering beats erosion.
+    const { x, z } = this.mesh.position;
+    const roads = this.game.roads;
+    const road = roads ? roads.speedFactorAt(x, z) : 1;
+    if (road > 1) s *= road;
+    else if (this.game.ecology) s *= this.game.ecology.speedFactorAt(x, z);
+    // A mount or draught animal carries you faster.
+    s *= this.companionBonus('speed');
     return s;
   }
   get strength() {
@@ -268,6 +282,47 @@ export class Creature {
   get carryTotal() {
     const c = this.carrying;
     return (c.food || 0) + (c.wood || 0) + (c.rock || 0) + (c.metal || 0);
+  }
+
+  // ------------------------- Phase 3: tools & companions -------------------
+
+  /** Equip a crafted tool (replacing whatever was held). */
+  equipTool(tool) {
+    this.tool = tool;
+    this.morale = Math.min(100, this.morale + 6);
+    return tool;
+  }
+
+  /**
+   * Attempt to tame a wild animal. Willpower raises the odds; failure spooks
+   * the animal rather than simply doing nothing, so taming has a real cost.
+   */
+  tameAttempt(beast) {
+    if (!beast || beast.tamedBy) return false;
+    const g = this.game;
+    const spec = COMPANIONS[beast.type];
+    if (!spec || !canTame(g.stateOf(this.side).techs, beast.type)) return false;
+
+    if (g.civStats) g.civStats.tameAttempts++;
+    const odds = spec.tameChance * (0.6 + this.willpower / 100);
+    if (g.rng() > odds) {
+      beast.startle(this.pos);
+      this.morale = Math.max(0, this.morale - 3);
+      return false;
+    }
+    beast.tamedBy = this;
+    beast.side = this.side;
+    this.companion = beast;
+    this.morale = Math.min(100, this.morale + 12);
+    if (g.civStats) g.civStats.tamed++;
+    g.msg?.(`${this.name} tamed a ${spec.name}`, this.pos.clone());
+    return true;
+  }
+
+  /** Aggregate bonus granted by an equipped tool + tamed companion. */
+  companionBonus(field) {
+    const spec = this.companion && COMPANIONS[this.companion.type];
+    return spec?.grants?.[field] ?? 1;
   }
 
   /** Start panic: sprint away from a point with arms raised. */
@@ -443,13 +498,29 @@ export class Creature {
       }
     }
 
-    // night sleep
-    if (g.cycles.isNight && !this.isWarrior && this.cls !== 'monk' && this.alert <= 0 && this.fear < 0.3) {
-      this.releaseClaim();
-      this.sprinting = false;
-      if (nearHome) { this.task = 'sleep'; this.target = null; }
-      else { this.task = 'retreat'; this.target = home.pos.clone(); }
-      return;
+    // Daily schedule (Phase 3). Advisory only: warriors, alerted and
+    // frightened units ignore the clock, which is what stops a unit walking
+    // home to bed in the middle of a raid.
+    if (!this.isWarrior && this.cls !== 'monk' && this.alert <= 0 && this.fear < 0.3) {
+      const intent = scheduledIntent({
+        hour: g.cycles.hour,
+        era: g.eraOf(this.side),
+        cls: this.cls,
+        energy: this.energy,
+        rng: g.rng,
+      });
+      if (intent === 'sleep') {
+        this.releaseClaim();
+        this.sprinting = false;
+        if (nearHome) { this.task = 'sleep'; this.target = null; }
+        else { this.task = 'retreat'; this.target = home.pos.clone(); }
+        return;
+      }
+      if (intent === 'pray' && nearHome) {
+        this.releaseClaim();
+        this.task = 'pray'; this.target = null;
+        return;
+      }
     }
     if (this.task === 'sleep') this.task = 'idle';
 
@@ -460,6 +531,14 @@ export class Creature {
 
     switch (CLASSES[this.cls]?.role) {
       case 'gather': {
+        // Keep pursuing an in-progress taming. think() re-runs every tick, so
+        // without this the unit re-rolls its intent before it ever reaches the
+        // animal — harvesting survives this via `claimed`, taming needs its own
+        // guard.
+        if (this.task === 'tame' && this.target && !this.target.tamedBy
+            && this.target.hp > 0 && !this.target.spooked) {
+          return;
+        }
         const cap = 12;
         if (this.holding) { this.task = 'deposit'; this.target = home; return; }
         if (this.carryTotal >= cap) { this.task = 'deposit'; this.target = home; this.sprinting = this.energy > 30; return; }
@@ -468,6 +547,38 @@ export class Creature {
         }
         this.releaseClaim();
         const st = g.stateOf(this.side);
+
+        // --- Phase 3 civic work, ahead of raw gathering ---
+        // Craft the best tool this era affords, if we're empty-handed.
+        if (!this.tool) {
+          const tool = g.bestToolForSide(this.side, 'wood')
+            || g.bestToolForSide(this.side, 'food');
+          if (tool && canAfford(st, tool) && g.rng() < 0.5) {
+            payFor(st, tool);
+            this.equipTool(tool);
+            if (g.civStats) g.civStats.toolsCrafted++;
+            g.msg?.(`${this.name} crafted a ${tool.name}`, this.pos.clone());
+          }
+        }
+        // Pave an open route between structures.
+        const route = g.roads?.openRoutes[0];
+        if (route && st.wood >= PAVE_COST_WOOD && g.rng() < 0.35) {
+          const wp = g.roads.nextWaypoint(route);
+          if (wp) {
+            this.task = 'pave';
+            this.target = { pos: new THREE.Vector3(wp.x, g.terrain.getHeight(wp.x, wp.z), wp.z), route };
+            return;
+          }
+        }
+        // Try to tame a nearby wild animal into a companion. The gate is
+        // generous because it only fires when a tameable beast is genuinely
+        // in range and this unit has no companion — a tight gate combined
+        // with wandering fauna means taming effectively never happens.
+        if (!this.companion && g.rng() < 0.35) {
+          const beast = g.nearestTameable?.(this, 26);
+          if (beast) { this.task = 'tame'; this.target = beast; return; }
+        }
+
         // pick a need based on stockpiles, then claim a matching node / activity
         const needs = [
           { y: 'food', w: st.food < 40 ? 3 : 1 },
@@ -617,6 +728,8 @@ export class Creature {
       let mul = 3.2 * this.intelligence * g.cycles.gatherMul * (g.hasTech(this.side, 'toolmaking') ? 1.3 : 1);
       if (tgt.kind === 'bush' && g.hasTech(this.side, 'herbalism')) mul *= 1.6;
       if (g.chiefNear(this)) mul *= 1.2;
+      // Phase 3: an equipped tool accelerates its matching resource stream.
+      if (this.tool && this.tool.yields === (tgt.yields || 'wood')) mul *= this.tool.boost;
       const got = tgt.harvest(dt * mul);
       const y = tgt.yields || 'wood';
       this.carrying[y] = (this.carrying[y] || 0) + got;
@@ -626,6 +739,28 @@ export class Creature {
       g.ecology?.drainAt(tgt.pos.x, tgt.pos.z, got * bite, 2.6);
       if (tgt.depleted) { this.releaseClaim(); this.target = null; }
       return;
+    }
+    if (this.task === 'pave' && d < 1.8) {
+      const route = tgt?.route;
+      const st = g.stateOf(this.side);
+      if (route && st.wood >= PAVE_COST_WOOD) {
+        st.wood -= PAVE_COST_WOOD;
+        const finished = g.roads.completeWaypoint(route);
+        if (finished) g.msg?.('A road now joins two of our structures', this.pos.clone());
+      }
+      this.task = 'idle'; this.target = null;
+      return;
+    }
+    if (this.task === 'tame') {
+      // An approached animal goes still and wary rather than wandering off.
+      // Without this a unit almost never closes the gap on a moving target,
+      // and taming silently never fires.
+      if (tgt && d < 7) tgt._curious = 0.6;
+      if (d < 2.6) {
+        this.tameAttempt(tgt);
+        this.task = 'idle'; this.target = null;
+        return;
+      }
     }
     if (this.task === 'deposit' && d < 2.6) {
       const st = g.stateOf(this.side);
@@ -895,6 +1030,30 @@ export class Animal {
       }
       return;
     }
+    // Phase 3: a tamed companion trails its owner instead of wandering.
+    if (this.tamedBy) {
+      if (this.tamedBy.dead || this.tamedBy.hp <= 0) { this.tamedBy = null; }
+      else {
+        const owner = this.tamedBy.pos;
+        const dx = owner.x - this.pos.x, dz = owner.z - this.pos.z;
+        const d = Math.hypot(dx, dz);
+        if (d > 2.4) {
+          const sp = 2.4 * dt;
+          this.pos.x += (dx / d) * sp;
+          this.pos.z += (dz / d) * sp;
+          this.pos.y = g.terrain.getHeight(this.pos.x, this.pos.z);
+          this.mesh.rotation.y = Math.atan2(dx, dz);
+        }
+        this._spook = Math.max(0, (this._spook || 0) - dt);
+        return;
+      }
+    }
+    // Being approached by a would-be tamer: hold still.
+    if (this._curious > 0) {
+      this._curious -= dt;
+      this._spook = Math.max(0, (this._spook || 0) - dt);
+      return;
+    }
 
     if (this.aquatic) return this.updateFish(dt);
     if (this.type === 'snake') this.updateSnakeExtras(dt);
@@ -986,6 +1145,23 @@ export class Animal {
     this.hp -= amount;
     if (this.hp <= 0) this.game.killAnimal(this, attacker);
   }
+
+  /**
+   * A failed taming spooks the animal: it bolts away from the would-be tamer
+   * and refuses further attempts while spooked, so taming has a real cost
+   * rather than being a free reroll every tick.
+   */
+  startle(fromPos) {
+    this._spook = 6;
+    const dx = this.pos.x - fromPos.x, dz = this.pos.z - fromPos.z;
+    const d = Math.hypot(dx, dz) || 1;
+    this.pos.x += (dx / d) * 2.5;
+    this.pos.z += (dz / d) * 2.5;
+    this.pos.y = this.game.terrain.getHeight(this.pos.x, this.pos.z);
+  }
+
+  /** Spooked animals can't be tamed until they settle. */
+  get spooked() { return (this._spook || 0) > 0; }
 }
 
 // ============================ MONSTER ============================

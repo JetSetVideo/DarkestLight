@@ -8,6 +8,8 @@ import { Creature, Animal, Monster, Building, ResourceNode, Relic, Holdable, mix
 import { Terrain, Cycles, WATER_Y, WORLD_SIZE, MAP_SHAPES } from './world.js';
 import { Ecology } from './engine/ecology.js';
 import { RiverSystem } from './generation/rivers.js';
+import { RoadNetwork } from './engine/roads.js';
+import { eraOf, bestToolFor, COMPANIONS, canTame, revealedResources } from './ai/crafting.js';
 import { mulberry32, clamp, dist2, pick } from './util.js';
 import { isHybrid } from './dna.js';
 import {
@@ -47,6 +49,14 @@ export class Game {
     });
     this.rivers = new RiverSystem(this.terrain, this.ecology);
     this.rivers.addGeneratedRiver();
+
+    // Phase 3 — paved road network between structures.
+    this.roads = new RoadNetwork(this.terrain);
+    this._roadPlanTimer = 6;
+    // Cumulative civic activity. Snapshot counts (live companions, equipped
+    // tools) undercount badly because companions die and units are replaced —
+    // these totals are what the ledger and the verification script read.
+    this.civStats = { tamed: 0, tameAttempts: 0, toolsCrafted: 0 };
 
     this.influenceOverlay = buildInfluenceOverlay(scene);
     this.influenceOn = false;
@@ -478,6 +488,15 @@ export class Game {
     if (i >= 0) this.animals.splice(i, 1);
     this.scene.remove(a.mesh);
     if (this.selected === a) this.setSelected(null);
+    // A tamed companion's owner must not keep a reference to a dead animal —
+    // the link is bidirectional, so both ends have to be cleared.
+    if (a.tamedBy) {
+      if (a.tamedBy.companion === a) {
+        a.tamedBy.companion = null;
+        a.tamedBy.morale = Math.max(0, a.tamedBy.morale - 15); // losing a companion hurts
+      }
+      a.tamedBy = null;
+    }
     if (attacker && attacker.side && !a.aquatic) this.state[attacker.side].food += a.type === 'snake' ? 4 : 10;
   }
   killMonster(m, attacker) {
@@ -503,6 +522,49 @@ export class Game {
     r.amount = 0; // so any claimant abandons it
     this.scene.remove(r.mesh);
   }
+  // ===================== PHASE 3: CIVILISATION ADVANCEMENT ==================
+
+  /** Technological era of a side, derived from the techs it holds. */
+  eraOf(side) { return eraOf(this.stateOf(side).techs); }
+
+  /** Best craftable tool for a resource stream at this side's era. */
+  bestToolForSide(side, yields) { return bestToolFor(this.stateOf(side).techs, yields); }
+
+  /** Hidden map resources this side's techs have revealed. */
+  revealedFor(side) { return revealedResources(this.stateOf(side).techs); }
+
+  /** Nearest untamed animal this side's era permits taming, within reach. */
+  nearestTameable(unit, maxDist = 18) {
+    const techs = this.stateOf(unit.side).techs;
+    let best = null, bestD = maxDist * maxDist;
+    for (const a of this.animals) {
+      if (a.tamedBy || a.spooked || !COMPANIONS[a.type] || !canTame(techs, a.type)) continue;
+      const d = dist2(a.pos.x, a.pos.z, unit.pos.x, unit.pos.z);
+      if (d < bestD) { bestD = d; best = a; }
+    }
+    return best;
+  }
+
+  /**
+   * Periodically plan roads between this side's structures. Nearest-pair
+   * first, so the network grows outward from the settlement core rather than
+   * flinging a highway to the furthest hut.
+   */
+  planRoads(side) {
+    const structures = this.buildings.filter((b) => b.side === side && !b.constructing);
+    if (structures.length < 2) return null;
+    let bestPair = null, bestD = Infinity;
+    for (let i = 0; i < structures.length; i++) {
+      for (let j = i + 1; j < structures.length; j++) {
+        const a = structures[i], b = structures[j];
+        if (this.roads.hasRoute(a, b)) continue;
+        const d = dist2(a.pos.x, a.pos.z, b.pos.x, b.pos.z);
+        if (d < bestD) { bestD = d; bestPair = [a, b]; }
+      }
+    }
+    return bestPair ? this.roads.planRoute(bestPair[0], bestPair[1]) : null;
+  }
+
   // ===================== PHASE 1: ENVIRONMENTAL FEEDBACK =====================
 
   /**
@@ -1169,6 +1231,15 @@ export class Game {
       }
     }
     this.ecology.tick(dt);
+
+    // Road planning: cheap, but no reason to run it every frame.
+    this._roadPlanTimer -= dt;
+    if (this._roadPlanTimer <= 0) {
+      this._roadPlanTimer = 12;
+      for (const side of ['player', 'enemy']) {
+        if (this.roads.openRoutes.length < 3) this.planRoads(side);
+      }
+    }
     // decay shields
     if (this._shields) {
       for (const s of this._shields) s.ttl -= dt;

@@ -932,6 +932,12 @@ export class Cycles {
   get seasonIndex() { return Math.floor(this.day / SEASON_DAYS) % 4; }
   get season() { return SEASONS[this.seasonIndex]; }
   get dayFrac() { return (this.time % DAY_LEN) / DAY_LEN; }
+  /**
+   * Hour of the in-game day, 0..24. `time` is elapsed *seconds* (DAY_LEN
+   * seconds per day), so anything reasoning about time-of-day must use this,
+   * not `time` directly.
+   */
+  get hour() { return this.dayFrac * 24; }
   get isNight() { return this.dayFrac < 0.22 || this.dayFrac > 0.78; }
   get moonOut() { return ((this.day * 2654435761 + this._seed) % 97) / 97 > 0.33; }
   get raining() { return this.weather === 'rain' || this.weather === 'storm'; }
