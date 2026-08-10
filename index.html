@@ -17,9 +17,9 @@
     <h1 class="title">DARKEST&nbsp;LIGHT</h1>
     <p class="subtitle">a minimalist god game &mdash; spore &times; black &amp; white &times; godus</p>
     <div class="menu-buttons" id="menu-buttons">
+      <button id="btn-story" class="mbtn">Story Mode</button>
       <button id="btn-battle" class="mbtn">Battle Mode</button>
       <button id="btn-construction" class="mbtn">Construction Mode</button>
-      <button id="btn-story" class="mbtn locked" title="The chronicles are still being written...">Story Mode <span class="soon">soon</span></button>
       <button id="btn-gallery" class="mbtn">Lexicon</button>
       <button id="btn-settings" class="mbtn">Settings</button>
     </div>
@@ -27,6 +27,13 @@
       <p class="civ-label">Choose your civilization</p>
       <div id="civ-list" class="civ-list"></div>
       <button id="btn-civ-cancel" class="mbtn small">Cancel</button>
+    </div>
+    <!-- Story mode: mission list + briefing (Phase 6) -->
+    <div id="mission-select" class="civ-select hidden">
+      <p class="civ-label">Choose a chapter</p>
+      <div id="mission-list" class="civ-list"></div>
+      <div id="mission-brief" class="mission-brief hidden"></div>
+      <button id="btn-mission-cancel" class="mbtn small">Back</button>
     </div>
   </div>
 </div>

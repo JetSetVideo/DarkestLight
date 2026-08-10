@@ -1,0 +1,64 @@
+{
+  "$schema": "../schemas/mission.schema.json",
+  "missionId": "mission-01",
+  "title": "The Quiet Rival",
+  "difficulty": "Easy",
+  "startingAge": "Stone",
+  "order": 4,
+  "unlocks": null,
+  "mode": "battle",
+  "aiGod": { "aggression": 0.25, "initialAlignment": { "orderChaos": -40, "goodEvil": -25 } },
+  "summary": "A rival god stirs on the far shore — chaotic, wrathful, but not yet bold. Take the island before it finds its nerve.",
+  "briefing": [
+    "You are not alone on this island.",
+    "The other god is a chaotic thing, and its temper will show in the sky.",
+    "Grow your people, hold ground, and finish what it starts."
+  ],
+  "initialAlignment": { "orderChaos": 0, "goodEvil": 0 },
+  "quests": [
+    {
+      "questId": "m1-settle",
+      "title": "Take root",
+      "description": "Grow your people and hold the land around them.",
+      "triggerCondition": { "type": "PopulationReached", "targetValue": "8" },
+      "objectives": [
+        { "objectiveId": "m1-o1", "text": "Pave roads to bind your settlements", "type": "BuildRoad", "targetAmount": 14 }
+      ],
+      "rewards": {
+        "victoryPoints": 100,
+        "unlockedTech": "masonry",
+        "weatherShift": "None",
+        "alignmentImpact": { "orderChaosDelta": 0.1, "goodEvilDelta": 0 }
+      }
+    },
+    {
+      "questId": "m1-drought",
+      "title": "Survive the drought",
+      "description": "The rival's chaos will wither your ground. Bring the water back.",
+      "triggerCondition": { "type": "BiomeDesertified", "targetValue": "30" },
+      "objectives": [
+        { "objectiveId": "m1-o2", "text": "Restore the ruined land with water", "type": "RedirectRiver", "targetAmount": 1 }
+      ],
+      "rewards": {
+        "victoryPoints": 140,
+        "weatherShift": "Rainstorm",
+        "alignmentImpact": { "orderChaosDelta": 0.08, "goodEvilDelta": 0.12 }
+      }
+    },
+    {
+      "questId": "m1-answer",
+      "title": "Answer the rival",
+      "description": "Meet the other god's works with your own.",
+      "triggerCondition": { "type": "AgeReached", "targetValue": "Fire" },
+      "objectives": [
+        { "objectiveId": "m1-o3", "text": "Work miracles over the island", "type": "CastSpell", "targetAmount": 8 },
+        { "objectiveId": "m1-o4", "text": "Arm your people with crafted tools", "type": "CraftTools", "targetAmount": 6 }
+      ],
+      "rewards": {
+        "victoryPoints": 160,
+        "weatherShift": "ClearSkies",
+        "alignmentImpact": { "orderChaosDelta": 0.06, "goodEvilDelta": 0.06 }
+      }
+    }
+  ]
+}

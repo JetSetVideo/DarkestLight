@@ -1,0 +1,76 @@
+{
+  "$schema": "../schemas/mission.schema.json",
+  "missionId": "tutorial-01",
+  "title": "The Thirsty Land",
+  "difficulty": "Tutorial",
+  "startingAge": "Stone",
+  "order": 1,
+  "unlocks": "tutorial-02",
+  "mode": "construction",
+  "summary": "Learn to shape the island: raise and lower the ground, divert a river, and bring dead soil back to life.",
+  "briefing": [
+    "Your people are few and the earth is tired.",
+    "A god shapes the world before shaping its peoples. Learn the land first.",
+    "Use Dig and Raise to reshape the ground. Use the River tool to steer water where it is needed."
+  ],
+  "initialAlignment": { "orderChaos": 0, "goodEvil": 0 },
+  "quests": [
+    {
+      "questId": "t1-terrain",
+      "title": "Shape the earth",
+      "description": "Raise and lower the ground with the Dig and Raise tools.",
+      "triggerCondition": { "type": "PopulationReached", "targetValue": "1" },
+      "objectives": [
+        {
+          "objectiveId": "t1-o1",
+          "text": "Reshape the terrain (use Dig or Raise)",
+          "type": "RedirectRiver",
+          "targetAmount": 1
+        }
+      ],
+      "rewards": {
+        "victoryPoints": 20,
+        "weatherShift": "ClearSkies",
+        "alignmentImpact": { "orderChaosDelta": 0.02, "goodEvilDelta": 0 }
+      }
+    },
+    {
+      "questId": "t1-river",
+      "title": "Move the waters",
+      "description": "Grab a watercourse with the River tool and steer it across the land.",
+      "triggerCondition": { "type": "TerrainModified", "targetValue": "1" },
+      "objectives": [
+        {
+          "objectiveId": "t1-o2",
+          "text": "Divert a river with the River tool",
+          "type": "RedirectRiver",
+          "targetAmount": 1
+        }
+      ],
+      "rewards": {
+        "victoryPoints": 40,
+        "weatherShift": "None",
+        "alignmentImpact": { "orderChaosDelta": 0.05, "goodEvilDelta": 0.05 }
+      }
+    },
+    {
+      "questId": "t1-restore",
+      "title": "Green the wasteland",
+      "description": "Water kills deserts. Steer the river through barren ground and watch it return to life.",
+      "triggerCondition": { "type": "BiomeDesertified", "targetValue": "1" },
+      "objectives": [
+        {
+          "objectiveId": "t1-o3",
+          "text": "Restore desertified land by watering it",
+          "type": "RedirectRiver",
+          "targetAmount": 2
+        }
+      ],
+      "rewards": {
+        "victoryPoints": 60,
+        "weatherShift": "Rainstorm",
+        "alignmentImpact": { "orderChaosDelta": 0.05, "goodEvilDelta": 0.1 }
+      }
+    }
+  ]
+}

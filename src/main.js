@@ -5,6 +5,7 @@ import { UI } from './ui.js';
 import { CameraRig, GodCursor } from './cursor.js';
 import { CIV_KEYS } from './civs.js';
 import { detectPlatform, loadKeybinds, buildUserReport } from './platform.js';
+import { Campaign } from './quests/campaign.js';
 
 const canvas = document.getElementById('game-canvas');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -112,9 +113,15 @@ const cursor = new GodCursor({
   msg: (t) => ui.msg(t),
 });
 
-function startGame(mode, playerCiv) {
+function startGame(mode, playerCiv, mission = null) {
   endGame();
   ui.saveSettings?.();
+  // Game construction is a legitimately long synchronous job (worldgen,
+  // populate) run from a click handler, not from inside the rAF loop. The
+  // dlGuard watchdog measures against the last frame epoch, which is stale
+  // here — and staler still in a throttled/background tab — so it would
+  // otherwise throw a spurious DL-HANG. Re-stamp before we begin.
+  window.__DL_FRAME_T0 = performance.now();
   const enemies = CIV_KEYS.filter(k => k !== playerCiv);
   const enemyCiv = enemies[(Math.random() * enemies.length) | 0];
   renderer.shadowMap.enabled = ui.settings.shadows;
@@ -123,8 +130,18 @@ function startGame(mode, playerCiv) {
     scene, camera, mode, playerCiv, enemyCiv,
     settings: ui.settings,
     msg: (t, pos) => ui.msg(t, pos),
-    onEnd: (result) => { ui.showEnd(result); },
+    onEnd: (result) => {
+      // Story mode: finishing every quest in the manifest unlocks the next
+      // chapter before the end screen is shown, so the menu is already
+      // up to date when the player returns to it.
+      if (mission && game?.missionWon) {
+        const { unlocked } = campaign.completeMission(mission.missionId);
+        result.mission = { id: mission.missionId, unlocked };
+      }
+      ui.showEnd(result);
+    },
   });
+  if (mission) game.applyMission(mission);
   ui.attachGame(game);
   window.__game = game; // dev hook: live instance for console debugging
   ui.showHUD();
@@ -149,6 +166,65 @@ function endGame() {
   ui.attachGame(null);
   scene.background = new THREE.Color(0x0d0f14);
 }
+
+// ---------------------------------------------------------------------------
+// Story mode (Phase 6): mission list -> briefing -> play -> unlock next.
+
+const campaign = new Campaign();
+window.__campaign = campaign; // dev hook, mirrors window.__game
+
+const missionSelect = document.getElementById('mission-select');
+const missionList = document.getElementById('mission-list');
+const missionBrief = document.getElementById('mission-brief');
+
+function renderMissionList() {
+  if (!missionList) return;
+  missionList.innerHTML = '';
+  for (const m of campaign.missions) {
+    const unlocked = campaign.isUnlocked(m.missionId);
+    const done = campaign.isCompleted(m.missionId);
+    const btn = document.createElement('button');
+    btn.className = 'civ-btn' + (unlocked ? '' : ' locked');
+    btn.disabled = !unlocked;
+    btn.innerHTML =
+      `<strong>${m.title}</strong><br><span class="soon">${m.difficulty}` +
+      `${done ? ' · complete' : unlocked ? '' : ' · locked'}</span>`;
+    btn.addEventListener('click', () => showBriefing(m));
+    missionList.appendChild(btn);
+  }
+}
+
+function showBriefing(m) {
+  if (!missionBrief) return;
+  missionBrief.classList.remove('hidden');
+  missionBrief.innerHTML =
+    `<h3>${m.title}</h3><p>${m.summary || ''}</p>` +
+    (m.briefing || []).map(line => `<p class="brief-line">${line}</p>`).join('') +
+    `<p class="brief-objectives"><strong>Objectives</strong></p><ul>` +
+    (m.quests || []).flatMap(q => (q.objectives || []).map(o => `<li>${o.text}</li>`)).join('') +
+    `</ul><button id="btn-mission-start" class="mbtn small">Begin</button>`;
+  document.getElementById('btn-mission-start')?.addEventListener('click', () => {
+    document.getElementById('screen-menu').classList.add('hidden');
+    missionSelect?.classList.add('hidden');
+    startGame(m.mode || 'battle', 'franks', m);
+  });
+}
+
+document.getElementById('btn-story')?.addEventListener('click', async () => {
+  try {
+    if (!campaign.missions.length) await campaign.load();
+    renderMissionList();
+    missionBrief?.classList.add('hidden');
+    missionSelect?.classList.remove('hidden');
+    document.getElementById('civ-select')?.classList.add('hidden');
+  } catch (err) {
+    console.error('[EnArché] campaign failed to load', err);
+    ui.msg('The chronicles could not be opened');
+  }
+});
+document.getElementById('btn-mission-cancel')?.addEventListener('click', () => {
+  missionSelect?.classList.add('hidden');
+});
 
 // dev hook: ?auto=battle|construction&civ=franks starts a match immediately
 const params = new URLSearchParams(location.search);

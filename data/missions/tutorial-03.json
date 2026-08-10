@@ -1,0 +1,61 @@
+{
+  "$schema": "../schemas/mission.schema.json",
+  "missionId": "tutorial-03",
+  "title": "The Shape of a God",
+  "difficulty": "Tutorial",
+  "startingAge": "Bronze",
+  "order": 3,
+  "unlocks": "mission-01",
+  "mode": "battle",
+  "summary": "Draw sigils to work miracles, learn how the sky answers your temper, and discover that every choice moves you along two axes at once.",
+  "briefing": [
+    "Draw with the Spell tool and the world will answer.",
+    "A circle brings rain. A line calls lightning. A jagged stroke tears the ground.",
+    "What you cast changes what you are — and what you are changes the weather over your island."
+  ],
+  "initialAlignment": { "orderChaos": 0, "goodEvil": 0 },
+  "quests": [
+    {
+      "questId": "t3-cast",
+      "title": "Work a miracle",
+      "description": "Select the Spell tool and draw a sigil over your land.",
+      "triggerCondition": { "type": "PopulationReached", "targetValue": "1" },
+      "objectives": [
+        { "objectiveId": "t3-o1", "text": "Cast miracles by drawing sigils", "type": "CastSpell", "targetAmount": 3 }
+      ],
+      "rewards": {
+        "victoryPoints": 40,
+        "weatherShift": "Rainstorm",
+        "alignmentImpact": { "orderChaosDelta": 0, "goodEvilDelta": 0.05 }
+      }
+    },
+    {
+      "questId": "t3-weather",
+      "title": "Temper of the sky",
+      "description": "Keep casting. An orderly god calms the weather; a chaotic one storms it.",
+      "triggerCondition": { "type": "AgeReached", "targetValue": "Bronze" },
+      "objectives": [
+        { "objectiveId": "t3-o2", "text": "Shape the weather through repeated miracles", "type": "CastSpell", "targetAmount": 6 }
+      ],
+      "rewards": {
+        "victoryPoints": 70,
+        "weatherShift": "ClearSkies",
+        "alignmentImpact": { "orderChaosDelta": 0.1, "goodEvilDelta": 0 }
+      }
+    },
+    {
+      "questId": "t3-align",
+      "title": "Two roads at once",
+      "description": "Your deeds place you on both the Order-Chaos and Good-Evil axes.",
+      "triggerCondition": { "type": "PopulationReached", "targetValue": "10" },
+      "objectives": [
+        { "objectiveId": "t3-o3", "text": "Commit to an alignment through your miracles", "type": "CastSpell", "targetAmount": 10 }
+      ],
+      "rewards": {
+        "victoryPoints": 90,
+        "weatherShift": "None",
+        "alignmentImpact": { "orderChaosDelta": 0.05, "goodEvilDelta": 0.05 }
+      }
+    }
+  ]
+}

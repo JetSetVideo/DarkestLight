@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EnArcheMissionManifest",
+  "type": "object",
+  "properties": {
+    "missionId": { "type": "string" },
+    "title": { "type": "string" },
+    "difficulty": { "type": "string", "enum": ["Tutorial", "Easy", "Medium", "Hard", "Godlike"] },
+    "startingAge": { "type": "string", "enum": ["Stone", "Fire", "Bronze", "Iron", "Steel"] },
+    "initialAlignment": {
+      "type": "object",
+      "properties": {
+        "orderChaos": { "type": "number", "minimum": -100, "maximum": 100 },
+        "goodEvil": { "type": "number", "minimum": -100, "maximum": 100 }
+      },
+      "required": ["orderChaos", "goodEvil"]
+    },
+    "quests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "questId": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "triggerCondition": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string", "enum": ["BiomeDesertified", "PopulationReached", "AgeReached", "TerrainModified"] },
+              "targetValue": { "type": "string" }
+            },
+            "required": ["type"]
+          },
+          "objectives": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "objectiveId": { "type": "string" },
+                "text": { "type": "string" },
+                "type": { "type": "string", "enum": ["RedirectRiver", "CraftTools", "BuildRoad", "TameCompanions", "CastSpell"] },
+                "targetAmount": { "type": "integer" }
+              },
+              "required": ["objectiveId", "text", "type"]
+            }
+          },
+          "rewards": {
+            "type": "object",
+            "properties": {
+              "victoryPoints": { "type": "integer" },
+              "unlockedTech": { "type": "string" },
+              "weatherShift": { "type": "string", "enum": ["Rainstorm", "ClearSkies", "Heatwave", "None"] },
+              "alignmentImpact": {
+                "type": "object",
+                "properties": {
+                  "orderChaosDelta": { "type": "number" },
+                  "goodEvilDelta": { "type": "number" }
+                }
+              }
+            }
+          }
+        },
+        "required": ["questId", "title", "objectives"]
+      }
+    }
+  },
+  "required": ["missionId", "title", "difficulty", "quests"]
+}

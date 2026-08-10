@@ -10,8 +10,9 @@ import { Ecology } from './engine/ecology.js';
 import { RiverSystem } from './generation/rivers.js';
 import { RoadNetwork } from './engine/roads.js';
 import { eraOf, bestToolFor, COMPANIONS, canTame, revealedResources } from './ai/crafting.js';
-import { effectsFor, quadrantLabel, nudge } from './engine/alignment.js';
+import { effectsFor, quadrantLabel, nudge, fromManifest } from './engine/alignment.js';
 import { QuestEngine } from './quests/questEngine.js';
+import { Campaign } from './quests/campaign.js';
 import { victoryPoints, victoryBreakdown, proximityModifiers } from './engine/victory.js';
 import { mulberry32, clamp, dist2, pick } from './util.js';
 import { isHybrid } from './dna.js';
@@ -537,6 +538,48 @@ export class Game {
     r.amount = 0; // so any claimant abandons it
     this.scene.remove(r.mesh);
   }
+  // ===================== PHASE 6: STORY MODE ================================
+
+  /**
+   * Configure this match from a mission manifest: starting age, the god's
+   * initial alignment, the rival god's temperament, and the mission's quests
+   * (replacing the procedurally seeded set).
+   */
+  applyMission(manifest) {
+    if (!manifest) return null;
+    this.mission = manifest;
+
+    // Starting age: grant the techs that era implies, so the civ genuinely
+    // begins there rather than merely being labelled with it.
+    const AGE_TECHS = {
+      Stone: [], Fire: ['toolmaking'],
+      Bronze: ['toolmaking', 'masonry'],
+      Iron: ['toolmaking', 'masonry', 'warcraft'],
+      Steel: ['toolmaking', 'masonry', 'warcraft', 'agriculture', 'discipline'],
+    };
+    for (const t of AGE_TECHS[manifest.startingAge] || []) {
+      this.state.player.techs[t] = 1;
+    }
+
+    fromManifest(this.alignment, manifest.initialAlignment || {});
+    if (manifest.aiGod?.initialAlignment) {
+      fromManifest(this.enemyAlignment, manifest.aiGod.initialAlignment);
+    }
+    if (typeof manifest.aiGod?.aggression === 'number') {
+      this.aiAggression = manifest.aiGod.aggression;
+    }
+
+    // Mission quests replace the generated ones.
+    this.quests = new QuestEngine(this);
+    this.quests.loadManifest(manifest, 'player');
+    return this.quests;
+  }
+
+  /** True when every quest in the loaded mission is complete. */
+  get missionWon() {
+    return Campaign.isMissionWon(this.quests);
+  }
+
   // ===================== PHASE 5: RIVAL GODS & VICTORY ======================
 
   /**
@@ -548,7 +591,9 @@ export class Game {
   aiGodCast(side, st) {
     const align = this.enemyAlignment;
     if (!align || (st.dp ?? 0) < 60) return;
-    if (this.rng() > 0.35) return;   // gods are not twitchy
+    // Missions can set a rival's aggression (mission-01 uses a low 0.25 to
+    // give the player room to learn); default is a middling temperament.
+    if (this.rng() > (this.aiAggression ?? 0.35)) return;
 
     const wrathful = align.value < 0;
     // Wrathful gods smite; benevolent ones tend their flock.

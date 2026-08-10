@@ -291,3 +291,23 @@ body { font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif; color: var
 /* ---------- spell trail ---------- */
 #spell-trail { position: fixed; inset: 0; z-index: 15; pointer-events: none; }
 #spell-trail canvas { position: absolute; inset: 0; }
+
+/* ---------------- Story mode: mission briefing (Phase 6) ---------------- */
+.mission-brief {
+  margin: 10px 0 6px;
+  padding: 12px 14px;
+  text-align: left;
+  max-width: 460px;
+  background: rgba(12, 16, 24, 0.55);
+  border: 1px solid rgba(150, 180, 220, 0.22);
+  border-radius: 8px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.mission-brief h3 { margin: 0 0 6px; font-size: 15px; letter-spacing: 0.04em; }
+.mission-brief p { margin: 4px 0; font-size: 12px; line-height: 1.5; opacity: 0.86; }
+.mission-brief .brief-line { font-style: italic; opacity: 0.72; }
+.mission-brief .brief-objectives { margin-top: 10px; opacity: 1; }
+.mission-brief ul { margin: 4px 0 10px; padding-left: 18px; }
+.mission-brief li { font-size: 12px; line-height: 1.6; opacity: 0.86; }
+.civ-btn.locked, .mbtn.locked { opacity: 0.42; cursor: not-allowed; }

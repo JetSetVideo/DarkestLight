@@ -1,0 +1,62 @@
+{
+  "$schema": "../schemas/mission.schema.json",
+  "missionId": "tutorial-02",
+  "title": "Hands and Hooves",
+  "difficulty": "Tutorial",
+  "startingAge": "Fire",
+  "order": 2,
+  "unlocks": "tutorial-03",
+  "mode": "battle",
+  "summary": "Your people learn to work: crafting tools, paving roads between their homes, and winning the trust of wild beasts.",
+  "briefing": [
+    "A people with tools outlives a people with only hands.",
+    "Watch them craft, pave and tame. Their day now bends to the age they live in.",
+    "Roads cancel the drag of ruined ground — build them where the soil has died."
+  ],
+  "initialAlignment": { "orderChaos": 10, "goodEvil": 10 },
+  "quests": [
+    {
+      "questId": "t2-tools",
+      "title": "Arm the working hand",
+      "description": "Your people craft tools once they have the resources and the age for it.",
+      "triggerCondition": { "type": "PopulationReached", "targetValue": "6" },
+      "objectives": [
+        { "objectiveId": "t2-o1", "text": "Let your people craft tools", "type": "CraftTools", "targetAmount": 4 }
+      ],
+      "rewards": {
+        "victoryPoints": 40,
+        "weatherShift": "ClearSkies",
+        "alignmentImpact": { "orderChaosDelta": 0.06, "goodEvilDelta": 0 }
+      }
+    },
+    {
+      "questId": "t2-roads",
+      "title": "Bind the settlements",
+      "description": "Roads join structures and speed every journey between them.",
+      "triggerCondition": { "type": "PopulationReached", "targetValue": "8" },
+      "objectives": [
+        { "objectiveId": "t2-o2", "text": "Pave road between your structures", "type": "BuildRoad", "targetAmount": 10 }
+      ],
+      "rewards": {
+        "victoryPoints": 60,
+        "unlockedTech": "masonry",
+        "weatherShift": "None",
+        "alignmentImpact": { "orderChaosDelta": 0.12, "goodEvilDelta": 0 }
+      }
+    },
+    {
+      "questId": "t2-tame",
+      "title": "Beasts at heel",
+      "description": "Some animals will follow those who approach them patiently.",
+      "triggerCondition": { "type": "AgeReached", "targetValue": "Fire" },
+      "objectives": [
+        { "objectiveId": "t2-o3", "text": "Tame an animal companion", "type": "TameCompanions", "targetAmount": 1 }
+      ],
+      "rewards": {
+        "victoryPoints": 50,
+        "weatherShift": "None",
+        "alignmentImpact": { "orderChaosDelta": 0, "goodEvilDelta": 0.08 }
+      }
+    }
+  ]
+}
