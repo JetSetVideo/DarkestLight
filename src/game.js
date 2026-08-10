@@ -6,6 +6,8 @@ import * as THREE from 'three';
 import { CIVS, TECHS, BUILDINGS, FAVORS, INVOKE_FAUNA } from './civs.js';
 import { Creature, Animal, Monster, Building, ResourceNode, Relic, Holdable, mixDNA } from './entities.js';
 import { Terrain, Cycles, WATER_Y, WORLD_SIZE, MAP_SHAPES } from './world.js';
+import { Ecology } from './engine/ecology.js';
+import { RiverSystem } from './generation/rivers.js';
 import { mulberry32, clamp, dist2, pick } from './util.js';
 import { isHybrid } from './dna.js';
 import {
@@ -35,6 +37,17 @@ export class Game {
     this.cycles = new Cycles(scene, seed);
     this.cycles.particlesEnabled = settings.particles;
     this.cycles.oceanUniforms = this.terrain.oceanUniforms;
+
+    // Phase 1 — environmental feedback. Ecology tracks soil fertility and
+    // flips biomes between fertile and desert; rivers carve the map and are
+    // the moisture source that reverses desertification.
+    this.ecology = new Ecology(this.terrain, {
+      onDesertify: (x, z) => this.onCellDesertified(x, z),
+      onRestore: (x, z) => this.onCellRestored(x, z),
+    });
+    this.rivers = new RiverSystem(this.terrain, this.ecology);
+    this.rivers.addGeneratedRiver();
+
     this.influenceOverlay = buildInfluenceOverlay(scene);
     this.influenceOn = false;
 
@@ -490,6 +503,59 @@ export class Game {
     r.amount = 0; // so any claimant abandons it
     this.scene.remove(r.mesh);
   }
+  // ===================== PHASE 1: ENVIRONMENTAL FEEDBACK =====================
+
+  /**
+   * Rain waters the island. Sampled on a coarse lattice rather than per-cell:
+   * Ecology.waterAt already brushes a radius, so a sparse grid covers the map
+   * at a fraction of the cost and keeps rain off the frame budget.
+   */
+  rainfallTick(dt) {
+    const strength = this.cycles.weather === 'storm' ? 0.055 : 0.03;
+    const half = WORLD_SIZE / 2;
+    const step = 16;
+    for (let z = -half; z <= half; z += step) {
+      for (let x = -half; x <= half; x += step) {
+        this.ecology.waterAt(x, z, strength * dt, step * 0.8);
+      }
+    }
+  }
+
+  /**
+   * A cell just turned to desert. Vegetation rooted in it dies — this is the
+   * visible consequence that makes over-harvesting legible to the player.
+   */
+  onCellDesertified(x, z) {
+    const doomed = [];
+    for (const r of this.resources) {
+      if (r.kind !== 'tree' && r.kind !== 'bush') continue;
+      if (dist2(r.pos.x, r.pos.z, x, z) > 9) continue; // within ~3 world units
+      doomed.push(r);
+    }
+    for (const r of doomed) this.removeResource(r);
+    if (doomed.length && this.terrain.fogAt(x, z) > 0.9) {
+      this.msg('The soil is spent — the land turns to desert', new THREE.Vector3(x, this.terrain.getHeight(x, z), z));
+    }
+  }
+
+  /**
+   * A cell recovered. Flora returns gradually — one sapling at a time, gated
+   * by rng so a restored region greens over seconds instead of popping in.
+   */
+  onCellRestored(x, z) {
+    if (this.rng() > 0.12) return;
+    if (this.terrain.isWater(x, z)) return;
+    // Match the restored biome rather than always planting oak.
+    const bio = this.terrain.getBiomeKey?.(x, z) || '';
+    const kind = /Boreal|Tundra|Ice/i.test(bio) ? 'pine'
+      : /Tropical|Mangrove|Swamp/i.test(bio) ? 'palm'
+      : 'oak';
+    this.spawnSeedling(x, z, kind);
+    if (this.terrain.fogAt(x, z) > 0.9) {
+      this.msg('Green returns to the wasted land', new THREE.Vector3(x, this.terrain.getHeight(x, z), z));
+    }
+  }
+
   smashTree(tree) {
     const owner = tree._thrownBy || 'player';
     this.state[owner].wood += 8;
@@ -1091,6 +1157,18 @@ export class Game {
     this.terrain.setSeasonTint(this.cycles.snowAmt, this.cycles.autumnAmt);
     const sunDir = this.cycles.sun.position.clone().normalize();
     this.terrain.update(dt, sunDir);
+
+    // Phase 1 environmental loop: rivers deliver moisture, rain waters the
+    // whole island, then the ecology resolves fertility and biome flips.
+    this.rivers.tick(dt);
+    if (this.cycles.weather === 'rain' || this.cycles.weather === 'storm') {
+      this._rainTimer = (this._rainTimer || 0) - dt;
+      if (this._rainTimer <= 0) {
+        this._rainTimer = 0.5;
+        this.rainfallTick(0.5);
+      }
+    }
+    this.ecology.tick(dt);
     // decay shields
     if (this._shields) {
       for (const s of this._shields) s.ttl -= dt;

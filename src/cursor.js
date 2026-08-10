@@ -243,6 +243,20 @@ export class GodCursor {
         this.terraforming = true;
         this.terraformAt(e, 0.016);
         break;
+      case 'river': {
+        // Grab the nearest watercourse control point; the drag in onMove
+        // re-routes it, and the release in onUp settles the channel.
+        const p = this.groundPoint(e);
+        if (!p) break;
+        const near = game.rivers?.nearestControl?.(p.x, p.z, 18);
+        if (near) {
+          this.riverGrab = near;
+          this.msg('Diverting the watercourse — drag to steer, release to settle');
+        } else {
+          this.msg('No watercourse within reach — click closer to a river');
+        }
+        break;
+      }
       case 'build': {
         if (!this.buildType) break;
         const p = this.groundPoint(e);
@@ -332,6 +346,10 @@ export class GodCursor {
       if (this.tool === 'plant') this.plantAt(e);
       else this.terraformAt(e, 0.016);
     }
+    if (this.riverGrab) {
+      const p = this.groundPoint(e);
+      if (p) this.getGame()?.rivers?.moveControl(this.riverGrab, p.x, p.z);
+    }
     if (this.tool === 'build' && this.buildType) this.updatePhantom(this.groundPoint(e));
     else if (this.phantom && this.tool !== 'build') this.clearPhantom();
   }
@@ -340,6 +358,10 @@ export class GodCursor {
     const game = this.getGame();
     this.rotating = false;
     this.terraforming = false;
+    if (this.riverGrab) {
+      this.riverGrab = null;
+      this.msg('The watercourse settles into its new bed');
+    }
     if (!game) return;
 
     if (this.miracle) {

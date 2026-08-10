@@ -217,6 +217,10 @@ export class Creature {
     else this.sprinting = false;
     // exhaustion slows you
     if (this.energy < 15) s *= 0.7;
+    // Phase 1: loose desertified sand is hard going. Paved roads will later
+    // cancel this malus (Phase 3).
+    const eco = this.game.ecology;
+    if (eco) s *= eco.speedFactorAt(this.mesh.position.x, this.mesh.position.z);
     return s;
   }
   get strength() {
@@ -616,6 +620,10 @@ export class Creature {
       const got = tgt.harvest(dt * mul);
       const y = tgt.yields || 'wood';
       this.carrying[y] = (this.carrying[y] || 0) + got;
+      // Phase 1: taking from the land costs the land. Biomass (wood/food)
+      // strips the soil; ore and stone barely touch it.
+      const bite = (y === 'wood' || y === 'food') ? 0.030 : 0.006;
+      g.ecology?.drainAt(tgt.pos.x, tgt.pos.z, got * bite, 2.6);
       if (tgt.depleted) { this.releaseClaim(); this.target = null; }
       return;
     }
