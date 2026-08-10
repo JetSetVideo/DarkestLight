@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { CIVS, CLASSES, BUILDINGS, SPELLS } from './civs.js';
 import { noiseTextureDataURL, mulberry32 } from './util.js';
 import { applyToonShading } from './shaders/toon.js';
+import { requestUpgrade } from './generation/assetBridge.js';
 
 const matCache = new Map();
 const texCache = new Map();
@@ -425,6 +426,7 @@ export function buildStick(rng = Math.random) {
   g.userData.holdable = 'stick';
   g.userData.yields = 'wood';
   g.userData.amount = 1 + (rng() > 0.7 ? 1 : 0);
+  requestUpgrade(g, { kind: 'prop', name: 'wooden stick', size: 1 });
   return g;
 }
 
@@ -590,6 +592,16 @@ export function buildBuilding(type, civKey) {
   // buildings dominate the landscape
   if (type !== 'campfire' && type !== 'bridge') g.scale.setScalar(1.45);
   else if (type === 'bridge') g.scale.setScalar(1.2);
+  // The procedural mesh above is returned immediately and remains the
+  // fallback. When generated assets are enabled, an upgrade is requested in
+  // the background and swapped in on arrival (see generation/assetBridge.js).
+  requestUpgrade(g, {
+    kind: 'structure',
+    name: BUILDINGS[type]?.name || type,
+    era: civ.era || 'bronze',
+    material: type === 'forge' ? 'stone' : 'timber',
+    size: 1,
+  });
   return g;
 }
 

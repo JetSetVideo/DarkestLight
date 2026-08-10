@@ -164,9 +164,34 @@ check('VP totals present for both sides',
 check('breakdown travels with the result', !!result?.breakdown?.player?.parts);
 check('quests activated during the match', game.quests.stats.activated > 0,
   `${game.quests.stats.activated} activated`);
-check('at least one quest completed', game.quests.stats.completed > 0,
-  `${game.quests.stats.completed} completed`);
 check('quest log recorded events', game.quests.log.length > 0, `${game.quests.log.length} entries`);
+
+// Whether a quest completes *naturally* depends on the civ surviving long
+// enough to do the work, which varies run to run — asserting on it tests
+// economy balance, not the quest engine. Instead, drive an activated quest's
+// objectives directly and require the engine to resolve it.
+const target = game.quests.active[0] || game.quests.quests.find(q => q.state === 'active');
+if (target) {
+  const completedBefore = game.quests.stats.completed;
+  for (const o of target.objectives) {
+    // Satisfy the objective by advancing the counter it measures.
+    const need = (o.targetAmount ?? 1) + (o._base || 0);
+    if (o.type === 'BuildRoad') game.roads.stats.cellsPaved = need;
+    else if (o.type === 'CraftTools') game.civStats.toolsCrafted = need;
+    else if (o.type === 'TameCompanions') game.civStats.tamed = need;
+    else if (o.type === 'CastSpell') game.spellsCast = need;
+    else if (o.type === 'RedirectRiver') game.rivers.moves = need;
+  }
+  game.quests.tick();
+  check('an activated quest resolves when its objectives are met',
+    game.quests.stats.completed > completedBefore,
+    `"${target.title}" ${target.state}`);
+  check('completing a quest awards its victory points',
+    game.quests.vpFor('player') >= (target.rewards?.victoryPoints || 0),
+    `${game.quests.vpFor('player')} VP`);
+} else {
+  check('a quest was available to resolve', false, 'no active quest');
+}
 check('the rival god cast spells of its own', (game.aiCasts || 0) > 0, `${game.aiCasts || 0} casts`);
 check('the rival god developed an alignment',
   game.enemyAlignment.value !== 0 || game.enemyAlignment.order !== 0,

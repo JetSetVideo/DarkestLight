@@ -20,6 +20,16 @@ export const pick = (rng, arr) => arr[Math.floor(rng() * arr.length)];
 const _glob = typeof window !== 'undefined' ? window : globalThis;
 export function dlGuard(label) {
   const t0 = _glob.__DL_FRAME_T0;
+  // A hidden or occluded tab has its rAF throttled or paused, so the frame
+  // epoch stops advancing and every subsequent check looks like a 4s hang.
+  // That is exactly the false alarm behind the 2026-08-01 "freeze" scare, and
+  // it also fires for work started outside the loop (menu clicks, console).
+  // Re-baseline instead of throwing: a real hang will still be caught on the
+  // next genuine frame.
+  if (typeof document !== 'undefined' && document.hidden) {
+    _glob.__DL_FRAME_T0 = performance.now();
+    return;
+  }
   if (t0 && performance.now() - t0 > 4000) {
     _glob.__DL_FRAME_T0 = 0;
     const err = new Error('DL-HANG@' + label);
