@@ -5,6 +5,7 @@
 // Also: tides, path wear, day/night + moon, weather machine, fog of war.
 import * as THREE from 'three';
 import { makeFBM, clamp, lerp, pick } from './util.js';
+import { createOcean, createSkyDome } from './ocean.js';
 
 export const WORLD_SIZE = 160;
 export const SEG = 192;
@@ -523,12 +524,11 @@ export class Terrain {
     this.mesh.name = 'terrain';
     scene.add(this.mesh);
 
-    // Water
-    const waterGeo = new THREE.PlaneGeometry(WORLD_SIZE * 1.45, WORLD_SIZE * 1.45);
-    waterGeo.rotateX(-Math.PI / 2);
-    this.water = new THREE.Mesh(waterGeo, new THREE.MeshLambertMaterial({
-      color: 0x2a6f9e, transparent: true, opacity: 0.82,
-    }));
+    // Water — Gerstner cel ocean (waves, shore foam, sparkles; see ocean.js)
+    const ocean = createOcean({ heights: this.heights, gridV: V, worldSize: WORLD_SIZE });
+    this.water = ocean.mesh;
+    this.oceanUniforms = ocean.uniforms;
+    this._oceanSetHeights = ocean.setHeights;
     this.water.position.y = WATER_Y;
     scene.add(this.water);
 
@@ -801,6 +801,10 @@ export class Terrain {
   update(dt, sunDir) {
     this.time += dt;
     this.water.position.y = WATER_Y + Math.sin(this.time * 0.06) * 0.22;
+    if (this.oceanUniforms) {
+      this.oceanUniforms.uTime.value = this.time;
+      if (sunDir) this.oceanUniforms.uSunDir.value.copy(sunDir);
+    }
     if (this.groundUniforms) this.groundUniforms.uTime.value = this.time;
     if (this.socleUniforms) {
       this.socleUniforms.uTime.value = this.time;
@@ -812,7 +816,11 @@ export class Terrain {
       for (let k = 0; k < this.wear.length; k++) if (this.wear[k] > 0) this.wear[k] *= 0.94;
       this._colDirty = true;
     }
-    if (this._colDirty) this.recolor();
+    if (this._colDirty) {
+      this.recolor();
+      // Terraforming changed the heightfield: refresh the ocean depth texture.
+      this._oceanSetHeights?.(this.heights);
+    }
   }
 }
 
@@ -861,6 +869,12 @@ export class Cycles {
     scene.add(this.ambient, this.hemi);
 
     scene.fog = new THREE.Fog(0x0d0f14, 90, 260);
+
+    // Banded anime sky dome with a graphic sun disc (see ocean.js).
+    const dome = createSkyDome();
+    this.skyDome = dome.mesh;
+    this.skyUniforms = dome.uniforms;
+    scene.add(this.skyDome);
 
     const N = 1600;
     const pts = new Float32Array(N * 3);
@@ -965,6 +979,26 @@ export class Cycles {
     const sky = nightSky.clone().lerp(daySky, dayAmt);
     this.scene.background = sky;
     this.scene.fog.color.copy(sky);
+
+    // Sky dome bands derived from the same weather/day color; sun disc fades
+    // with daylight and cloud cover.
+    const sunVis = ({ sunny: 1, heatwave: 0.9, cloudy: 0.35, snow: 0.25 }[this.weather] || 0.1) * dayAmt;
+    if (this.skyUniforms) {
+      const u = this.skyUniforms;
+      u.uHorizon.value.copy(sky).lerp(new THREE.Color(0xffffff), 0.38 * dayAmt);
+      u.uMid.value.copy(sky);
+      u.uZenith.value.copy(sky).multiplyScalar(0.55 + 0.1 * (1 - dayAmt));
+      u.uSunDir.value.copy(this.sun.position).normalize();
+      u.uSunAmt.value = sunVis;
+    }
+    if (this.oceanUniforms) {
+      const u = this.oceanUniforms;
+      u.uDayAmt.value = dayAmt;
+      u.uSunVis.value = sunVis;
+      u.uSkyColor.value.copy(sky);
+      u.uFogNear.value = this.scene.fog.near;
+      u.uFogFar.value = this.scene.fog.far;
+    }
 
     const s = this.seasonIndex;
     this.sun.color.setHex(this.weather === 'heatwave' ? 0xffd9a0 : s === 3 ? 0xdde8ff : s === 2 ? 0xffe0b0 : 0xfff3d8);

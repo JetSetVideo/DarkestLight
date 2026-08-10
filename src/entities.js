@@ -3,7 +3,7 @@
 // animals (incl. snakes & fish), monsters, buildings and resources.
 import { CIVS, CLASSES, BUILDINGS, JOB_LABEL, TITLES } from './civs.js';
 import { buildHuman, buildAnimal, buildMonster, buildTree, buildBush, buildRock, buildMetalOre, buildStick, buildBuilding, buildRelic } from './models.js';
-import { clamp, lerp, genName, dist2 } from './util.js';
+import { clamp, lerp, genName, dist2, dlGuard } from './util.js';
 import { WATER_Y } from './world.js';
 import { iconForTask, STATUS_ICONS } from './actions.js';
 import {
@@ -106,6 +106,7 @@ export class Creature {
 
   _ensureStatusIcon() {
     if (this._iconSprite) return;
+    if (typeof document === 'undefined') return; // headless simulation
     const canvas = document.createElement('canvas');
     canvas.width = 64; canvas.height = 64;
     this._iconCanvas = canvas;
@@ -142,6 +143,7 @@ export class Creature {
   }
 
   refreshStatusIcon() {
+    dlGuard('refreshStatusIcon');
     this._ensureStatusIcon();
     this._iconT = (this._iconT || 0) + 0.05;
     const key = iconForTask(this.task, {
@@ -282,6 +284,7 @@ export class Creature {
   }
 
   update(dt) {
+    dlGuard('Creature.update');
     const g = this.game;
     this.age += dt / g.YEAR_SEC;
     this.mateCooldown = Math.max(0, this.mateCooldown - dt);
@@ -369,6 +372,7 @@ export class Creature {
 
   // ---------------- decision trees ----------------
   decide() {
+    dlGuard('Creature.decide');
     const g = this.game;
     const home = g.homeOf(this.side);
     if (!home) { this.task = 'idle'; this.sprinting = false; return; }
@@ -572,6 +576,7 @@ export class Creature {
   }
 
   act(dt) {
+    dlGuard('Creature.act');
     const g = this.game;
     const tgt = this.target;
     if (!tgt || this.task === 'ponder' || this.task === 'idle' || this.task === 'pray') return;
@@ -725,6 +730,7 @@ export class Creature {
   }
 
   animate(dt) {
+    dlGuard('Creature.animate');
     const L = this.mesh.userData.limbs;
     if (!L) return;
     // settle from flail

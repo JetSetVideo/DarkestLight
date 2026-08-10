@@ -126,6 +126,7 @@ function startGame(mode, playerCiv) {
     onEnd: (result) => { ui.showEnd(result); },
   });
   ui.attachGame(game);
+  window.__game = game; // dev hook: live instance for console debugging
   ui.showHUD();
   ui.msg(mode === 'battle'
     ? `Convert or exterminate the ${game.civOf('enemy')} before time runs out`
@@ -174,6 +175,7 @@ if (params.get('clicktest')) {
 let last = performance.now();
 function loop(now) {
   requestAnimationFrame(loop);
+  window.__DL_FRAME_T0 = performance.now(); // hang guard epoch (see util.js dlGuard)
   const raw = Math.min((now - last) / 1000, 0.1);
   last = now;
   // camera always responsive; simulation respects time scale

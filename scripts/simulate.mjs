@@ -11,7 +11,10 @@ const game = new Game({
   scene, camera, mode: 'battle',
   playerCiv: process.argv[2] || 'franks',
   enemyCiv: process.argv[3] || 'orcs',
-  settings: { fog: false, particles: false, shadows: false, matchlen: 20, camspeed: 1 },
+  settings: {
+    fog: process.env.SIM_FOG !== '0',
+    particles: false, shadows: false, matchlen: 20, camspeed: 1,
+  },
   onEnd: (r) => { result = r; },
   msg: () => {},
 });
@@ -29,7 +32,15 @@ game.killCreature = (c, attacker, cause) => {
 const dt = 1 / 20;
 let next = 0;
 for (let t = 0; t < 20 * 60 && !result; t += dt) {
+  const u0 = performance.now();
   game.update(dt);
+  const uMs = performance.now() - u0;
+  if (uMs > 250) {
+    console.log(`SLOW UPDATE ${uMs.toFixed(0)}ms at t=${(t / 60).toFixed(2)}min — ` +
+      `creatures=${game.creatures.length} animals=${game.animals.length} monsters=${game.monsters.length} ` +
+      `buildings=${game.buildings.length} resources=${game.resources.length} holdables=${game.holdables.length} effects=${game.effects.length}`);
+    if (uMs > 5000) { console.log('Aborting: single update exceeded 5s'); break; }
+  }
   if (t >= next) {
     next += 60;
     console.log(

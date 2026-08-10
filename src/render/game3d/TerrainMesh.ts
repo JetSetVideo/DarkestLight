@@ -1,9 +1,8 @@
-import * as THREE from "https://esm.sh/three@0.161.0";
+import * as THREE from "three";
 import { idx, type WorldMap } from "../../mapgen/MapTypes";
 
 export type TerrainAssets = {
   terrain: THREE.Mesh;
-  water: THREE.Mesh;
 };
 
 export function createTerrain(map: WorldMap, opts: { verticalScale: number }): TerrainAssets {
@@ -51,21 +50,7 @@ export function createTerrain(map: WorldMap, opts: { verticalScale: number }): T
   const terrain = new THREE.Mesh(flat, mat);
   terrain.receiveShadow = true;
 
-  // Water plane at sea level.
-  const waterGeo = new THREE.PlaneGeometry(w - 1, h - 1, 1, 1);
-  waterGeo.rotateX(-Math.PI / 2);
-  const waterMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(0x0b2a3c),
-    roughness: 0.15,
-    metalness: 0.05,
-    transparent: true,
-    opacity: 0.78,
-  });
-  const water = new THREE.Mesh(waterGeo, waterMat);
-  water.position.y = 0;
-  water.receiveShadow = true;
-
-  return { terrain, water };
+  return { terrain };
 }
 
 function clampInt(v: number, lo: number, hi: number): number {

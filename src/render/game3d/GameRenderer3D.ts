@@ -1,8 +1,22 @@
-import * as THREE from "https://esm.sh/three@0.161.0";
+import * as THREE from "three";
 import { type WorldMap } from "../../mapgen/MapTypes";
 import { idx } from "../../mapgen/MapTypes";
 import { createCharacter, type CharacterModel } from "./CharacterRig";
 import { createTerrain } from "./TerrainMesh";
+import { createOcean, type Ocean } from "./Ocean";
+import { createSkyDome, type SkyDome } from "./SkyDome";
+
+const VERTICAL_SCALE = 24;
+const SUN_DIR = new THREE.Vector3(0.45, 0.62, 0.38).normalize();
+const FOG_DENSITY = 0.0016;
+
+export type PerfStats = {
+  fps: number;
+  frameMs: number;
+  pixelRatio: number;
+  drawCalls: number;
+  triangles: number;
+};
 
 export class GameRenderer3D {
   readonly canvas: HTMLCanvasElement;
@@ -14,7 +28,8 @@ export class GameRenderer3D {
   #raf = 0;
 
   #terrain: THREE.Mesh | null = null;
-  #water: THREE.Mesh | null = null;
+  #ocean: Ocean | null = null;
+  #sky: SkyDome;
   #character: CharacterModel | null = null;
 
   // Camera controller (simple orbital side view with panning target)
@@ -23,8 +38,31 @@ export class GameRenderer3D {
   #pitch = 0.78;
   #distance = 85;
 
+  // Keyboard camera state (camera is the only keyboard-driven system).
+  #keys = new Set<string>();
+  #onKeyDown = (ev: KeyboardEvent) => {
+    if (ev.repeat) return;
+    this.#keys.add(ev.code);
+  };
+  #onKeyUp = (ev: KeyboardEvent) => {
+    this.#keys.delete(ev.code);
+  };
+  #onBlur = () => this.#keys.clear();
+
+  // Adaptive pixel ratio: never let the frame rate sag below ~58 fps.
+  #prCap: number;
+  #pixelRatio: number;
+  #frameAcc = 0;
+  #frameCount = 0;
+
+  readonly perf: PerfStats = { fps: 60, frameMs: 16.7, pixelRatio: 1, drawCalls: 0, triangles: 0 };
+
   readonly raycaster = new THREE.Raycaster();
   readonly pointerNdc = new THREE.Vector2();
+
+  // Pooled scratch vectors — no allocation in the render loop.
+  #scratchA = new THREE.Vector3();
+  #scratchB = new THREE.Vector3();
 
   constructor(opts: { quality: "low" | "high" }) {
     this.canvas = document.createElement("canvas");
@@ -36,50 +74,62 @@ export class GameRenderer3D {
       alpha: false,
       powerPreference: "high-performance",
     });
-    this.#renderer.setPixelRatio(Math.min(window.devicePixelRatio, opts.quality === "high" ? 2 : 1.25));
+    this.#prCap = Math.min(window.devicePixelRatio, opts.quality === "high" ? 2 : 1.25);
+    this.#pixelRatio = this.#prCap;
+    this.#renderer.setPixelRatio(this.#pixelRatio);
     this.#renderer.shadowMap.enabled = opts.quality === "high";
     this.#renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     this.#camera = new THREE.PerspectiveCamera(55, 1, 0.1, 2000);
 
-    this.#scene.background = new THREE.Color(0x070914);
+    // Day scene: banded sky dome + warm sun + soft blue ambient bounce.
+    this.#sky = createSkyDome({ sunDir: SUN_DIR });
+    this.#scene.add(this.#sky.mesh);
+    this.#scene.background = this.#sky.horizonColor;
+    this.#scene.fog = new THREE.FogExp2(this.#sky.horizonColor, FOG_DENSITY);
 
-    const hemi = new THREE.HemisphereLight(0xbfd6ff, 0x151624, 0.85);
+    const hemi = new THREE.HemisphereLight(0xdff0ff, 0x8a9a7a, 0.85);
     this.#scene.add(hemi);
 
-    const dir = new THREE.DirectionalLight(0xffffff, 1.25);
-    dir.position.set(90, 140, 60);
+    const dir = new THREE.DirectionalLight(0xfff1d6, 1.35);
+    dir.position.copy(SUN_DIR).multiplyScalar(280);
     dir.castShadow = opts.quality === "high";
     dir.shadow.mapSize.set(opts.quality === "high" ? 2048 : 1024, opts.quality === "high" ? 2048 : 1024);
     dir.shadow.camera.near = 10;
-    dir.shadow.camera.far = 420;
+    dir.shadow.camera.far = 700;
     dir.shadow.camera.left = -160;
     dir.shadow.camera.right = 160;
     dir.shadow.camera.top = 160;
     dir.shadow.camera.bottom = -160;
     this.#scene.add(dir);
 
-    // Subtle atmosphere fog for depth separation (cheap).
-    this.#scene.fog = new THREE.FogExp2(0x070914, 0.006);
+    window.addEventListener("keydown", this.#onKeyDown);
+    window.addEventListener("keyup", this.#onKeyUp);
+    window.addEventListener("blur", this.#onBlur);
 
     this.resize();
   }
 
   setWorld(map: WorldMap) {
     this.#terrain?.removeFromParent();
-    this.#water?.removeFromParent();
     this.#terrain?.geometry.dispose();
-    (this.#terrain?.material as any)?.dispose?.();
+    (this.#terrain?.material as THREE.Material | undefined)?.dispose?.();
+    this.#ocean?.mesh.removeFromParent();
+    this.#ocean?.dispose();
 
-    const { terrain, water } = createTerrain(map, { verticalScale: 24 });
+    const { terrain } = createTerrain(map, { verticalScale: VERTICAL_SCALE });
     terrain.castShadow = false;
     terrain.receiveShadow = true;
-    water.receiveShadow = true;
-
     this.#scene.add(terrain);
-    this.#scene.add(water);
     this.#terrain = terrain;
-    this.#water = water;
+
+    this.#ocean = createOcean(map, {
+      verticalScale: VERTICAL_SCALE,
+      sunDir: SUN_DIR,
+      fogColor: this.#sky.horizonColor,
+      fogDensity: FOG_DENSITY,
+    });
+    this.#scene.add(this.#ocean.mesh);
 
     // Spawn character at map spawn (convert to world coords relative to plane center).
     this.#character?.root.removeFromParent();
@@ -88,7 +138,7 @@ export class GameRenderer3D {
 
     const sx = map.spawn.x - (map.width - 1) / 2;
     const sz = map.spawn.y - (map.height - 1) / 2;
-    const y = sampleTerrainHeightAtMesh(terrain, map, map.spawn.x, map.spawn.y, 24);
+    const y = sampleTerrainHeight(map, map.spawn.x, map.spawn.y, VERTICAL_SCALE);
     this.#character.root.position.set(sx, y, sz);
 
     // Camera target on spawn.
@@ -109,8 +159,8 @@ export class GameRenderer3D {
 
   panBy(dx: number, dy: number) {
     // Pan target in camera-right / camera-forward on ground plane.
-    const right = new THREE.Vector3().setFromMatrixColumn(this.#camera.matrix, 0).normalize();
-    const forward = new THREE.Vector3().setFromMatrixColumn(this.#camera.matrix, 2).normalize();
+    const right = this.#scratchA.setFromMatrixColumn(this.#camera.matrix, 0).normalize();
+    const forward = this.#scratchB.setFromMatrixColumn(this.#camera.matrix, 2);
     forward.y = 0;
     forward.normalize();
     const scale = this.#distance * 0.0016;
@@ -141,9 +191,15 @@ export class GameRenderer3D {
 
   start() {
     const tick = () => {
+      const dt = Math.min(this.#clock.getDelta(), 0.1);
       const t = this.#clock.getElapsedTime();
+
+      this.#updateKeyboardCamera(dt);
       this.#character?.update(t);
+      this.#ocean?.update(t);
+
       this.#renderer.render(this.#scene, this.#camera);
+      this.#trackPerformance(dt);
       this.#raf = requestAnimationFrame(tick);
     };
     this.#raf = requestAnimationFrame(tick);
@@ -152,6 +208,7 @@ export class GameRenderer3D {
   resize() {
     const w = Math.max(1, window.innerWidth);
     const h = Math.max(1, window.innerHeight);
+    this.#renderer.setPixelRatio(this.#pixelRatio);
     this.#renderer.setSize(w, h, false);
     this.#camera.aspect = w / h;
     this.#camera.updateProjectionMatrix();
@@ -159,7 +216,63 @@ export class GameRenderer3D {
 
   destroy() {
     cancelAnimationFrame(this.#raf);
+    window.removeEventListener("keydown", this.#onKeyDown);
+    window.removeEventListener("keyup", this.#onKeyUp);
+    window.removeEventListener("blur", this.#onBlur);
+    this.#ocean?.dispose();
+    this.#sky.dispose();
     this.#renderer.dispose();
+  }
+
+  #updateKeyboardCamera(dt: number) {
+    const k = this.#keys;
+    if (k.size === 0) return;
+
+    let panX = 0;
+    let panY = 0;
+    if (k.has("KeyW") || k.has("ArrowUp")) panY += 1;
+    if (k.has("KeyS") || k.has("ArrowDown")) panY -= 1;
+    if (k.has("KeyA") || k.has("ArrowLeft")) panX += 1;
+    if (k.has("KeyD") || k.has("ArrowRight")) panX -= 1;
+
+    if (panX !== 0 || panY !== 0) {
+      // Reuse pointer-pan path with a dt-scaled synthetic pixel delta.
+      const speed = 620 * dt;
+      this.panBy(panX * speed, panY * speed);
+    }
+
+    let rot = 0;
+    if (k.has("KeyQ")) rot += 1;
+    if (k.has("KeyE")) rot -= 1;
+    if (rot !== 0) {
+      this.#yaw += rot * dt * 1.6;
+      this.#updateCamera();
+    }
+  }
+
+  #trackPerformance(dt: number) {
+    this.#frameAcc += dt;
+    this.#frameCount++;
+    if (this.#frameCount < 60) return;
+
+    const avg = this.#frameAcc / this.#frameCount;
+    this.#frameAcc = 0;
+    this.#frameCount = 0;
+
+    this.perf.fps = Math.round(1 / avg);
+    this.perf.frameMs = Math.round(avg * 10000) / 10;
+    this.perf.drawCalls = this.#renderer.info.render.calls;
+    this.perf.triangles = this.#renderer.info.render.triangles;
+    this.perf.pixelRatio = this.#pixelRatio;
+
+    // Adaptive pixel ratio: drop 0.25 below ~58 fps, recover slowly above 60.
+    if (avg > 1 / 58 && this.#pixelRatio > 1.0) {
+      this.#pixelRatio = Math.max(1.0, this.#pixelRatio - 0.25);
+      this.resize();
+    } else if (avg < 1 / 61 && this.#pixelRatio < this.#prCap) {
+      this.#pixelRatio = Math.min(this.#prCap, this.#pixelRatio + 0.25);
+      this.resize();
+    }
   }
 
   #updateCamera() {
@@ -167,11 +280,7 @@ export class GameRenderer3D {
     const sy = Math.sin(this.#yaw);
     const cp = Math.cos(this.#pitch);
     const sp = Math.sin(this.#pitch);
-    const offset = new THREE.Vector3(
-      sy * cp,
-      sp,
-      cy * cp,
-    ).multiplyScalar(this.#distance);
+    const offset = this.#scratchA.set(sy * cp, sp, cy * cp).multiplyScalar(this.#distance);
     this.#camera.position.copy(this.#target).add(offset);
     this.#camera.lookAt(this.#target);
   }
@@ -181,16 +290,7 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
 
-function sampleTerrainHeightAtMesh(
-  _mesh: THREE.Mesh,
-  map: WorldMap,
-  x: number,
-  y: number,
-  verticalScale: number,
-): number {
-  // Height is encoded as (h - seaLevel) * verticalScale in TerrainMesh.
-  // Use cell height directly for now.
+function sampleTerrainHeight(map: WorldMap, x: number, y: number, verticalScale: number): number {
   const c = map.cells[idx(map.width, x, y)];
   return (c.h - map.seaLevel) * verticalScale;
 }
-

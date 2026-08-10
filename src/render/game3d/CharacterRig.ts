@@ -1,4 +1,4 @@
-import * as THREE from "https://esm.sh/three@0.161.0";
+import * as THREE from "three";
 
 export type CharacterModel = {
   root: THREE.Group;

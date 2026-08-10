@@ -81,6 +81,7 @@ export class GameScreen implements Screen {
     countdown.remove();
 
     this.#mountHud();
+    this.#mountPerfOverlay();
     this.#bindWorldInput();
     this.#renderer3d.start();
   }
@@ -181,6 +182,37 @@ export class GameScreen implements Screen {
         r.zoom(Math.sign(ev.deltaY));
       }, { passive: false }),
     );
+  }
+
+  #mountPerfOverlay() {
+    const box = el("div", { className: "dl-perf" });
+    box.style.cssText =
+      "position:absolute;top:12px;left:12px;padding:6px 10px;font:12px/1.5 ui-monospace,monospace;" +
+      "color:#eaf6ff;background:rgba(8,12,20,0.55);border:1px solid rgba(255,255,255,0.14);" +
+      "border-radius:8px;pointer-events:none;white-space:pre;display:none;z-index:20;";
+    this.#container.append(box);
+
+    let visible = new URLSearchParams(location.search).has("debug");
+    box.style.display = visible ? "block" : "none";
+
+    this.#cleanup.push(
+      on(window, "keydown", (ev: KeyboardEvent) => {
+        if (ev.code !== "F3") return;
+        ev.preventDefault();
+        visible = !visible;
+        box.style.display = visible ? "block" : "none";
+      }),
+    );
+
+    const timer = setInterval(() => {
+      if (!visible || !this.#renderer3d) return;
+      const p = this.#renderer3d.perf;
+      box.textContent =
+        `FPS ${p.fps}  (${p.frameMs} ms)\n` +
+        `pixelRatio ${p.pixelRatio.toFixed(2)}\n` +
+        `draws ${p.drawCalls}  tris ${(p.triangles / 1000).toFixed(1)}k`;
+    }, 500);
+    this.#cleanup.push(() => clearInterval(timer));
   }
 
   #mountHud() {

@@ -1,4 +1,4 @@
-import * as THREE from "https://esm.sh/three@0.161.0";
+import * as THREE from "three";
 import { BG_FRAG, BG_VERT, HALO_FRAG, HALO_VERT, PLANET_FRAG, PLANET_VERT } from "./shaders/title";
 
 export class TitleRenderer {

@@ -14,7 +14,27 @@ export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const lerp = (a, b, t) => a + (b - a) * t;
 export const rand = (rng, a, b) => a + rng() * (b - a);
 export const pick = (rng, arr) => arr[Math.floor(rng() * arr.length)];
-export const dist2 = (ax, az, bx, bz) => { const dx = ax - bx, dz = az - bz; return dx * dx + dz * dz; };
+
+// Hang guard (debug): main.js stamps __DL_FRAME_T0 each frame; if a single
+// frame exceeds 4s we throw to unwind whatever is spinning, with a full stack.
+const _glob = typeof window !== 'undefined' ? window : globalThis;
+export function dlGuard(label) {
+  const t0 = _glob.__DL_FRAME_T0;
+  if (t0 && performance.now() - t0 > 4000) {
+    _glob.__DL_FRAME_T0 = 0;
+    const err = new Error('DL-HANG@' + label);
+    _glob.__DL_HANG = { label, stack: err.stack };
+    try { _glob.localStorage?.setItem('DL_HANG', err.stack); } catch { /* ignore */ }
+    console.error('[DL-HANG]', label, err.stack);
+    throw err;
+  }
+}
+
+export const dist2 = (ax, az, bx, bz) => {
+  dlGuard('dist2');
+  const dx = ax - bx, dz = az - bz;
+  return dx * dx + dz * dz;
+};
 
 // ---------------- Value noise (own implementation, no deps) ----------------
 export function makeNoise2D(seed) {

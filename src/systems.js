@@ -198,6 +198,7 @@ export function applyCultureMarkers(game) {
     game.culture[side] = culture;
     for (const c of game.creatures) {
       if (c.side !== side || c.lifeStage === 'child') continue;
+      if (typeof document === 'undefined') continue; // headless simulation
       let badge = c.mesh.userData.cultureBadge;
       if (!badge) {
         const canvas = document.createElement('canvas');

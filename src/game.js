@@ -34,6 +34,7 @@ export class Game {
     this.terrain.fogEnabled = settings.fog && mode === 'battle';
     this.cycles = new Cycles(scene, seed);
     this.cycles.particlesEnabled = settings.particles;
+    this.cycles.oceanUniforms = this.terrain.oceanUniforms;
     this.influenceOverlay = buildInfluenceOverlay(scene);
     this.influenceOn = false;
 
@@ -1473,6 +1474,7 @@ export class Game {
       ...this.effects.map(e => e.mesh), ...this.ghosts.values(),
       this.selRing, this.influenceOverlay,
       this.terrain.mesh, this.terrain.water, this.terrain.socle,
+      this.cycles.skyDome,
       this.cycles.sun, this.cycles.sun.target, this.cycles.ambient, this.cycles.hemi,
       this.cycles.rain, this.cycles.snow,
       ...(this.cycles.windLines || []),
