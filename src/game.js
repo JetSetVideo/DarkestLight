@@ -10,6 +10,7 @@ import { Ecology } from './engine/ecology.js';
 import { RiverSystem } from './generation/rivers.js';
 import { RoadNetwork } from './engine/roads.js';
 import { eraOf, bestToolFor, COMPANIONS, canTame, revealedResources } from './ai/crafting.js';
+import { effectsFor, quadrantLabel, nudge } from './engine/alignment.js';
 import { mulberry32, clamp, dist2, pick } from './util.js';
 import { isHybrid } from './dna.js';
 import {
@@ -37,6 +38,8 @@ export class Game {
     this.terrain = new Terrain(scene, seed, this.mapShape);
     this.terrain.fogEnabled = settings.fog && mode === 'battle';
     this.cycles = new Cycles(scene, seed);
+    // Phase 4: the sky answers to the god. Weather picking reads this.
+    this.cycles.alignment = this.alignment;
     this.cycles.particlesEnabled = settings.particles;
     this.cycles.oceanUniforms = this.terrain.oceanUniforms;
 
@@ -522,6 +525,80 @@ export class Game {
     r.amount = 0; // so any claimant abandons it
     this.scene.remove(r.mesh);
   }
+  // ===================== PHASE 4: DIVINE CONSEQUENCE ========================
+
+  /** Current gameplay effects of the god's alignment. */
+  get alignEffects() { return effectsFor(this.alignment); }
+
+  /** Quadrant name for the HUD, e.g. "Chaotic Wrathful". */
+  get alignLabel() { return quadrantLabel(this.alignment); }
+
+  /**
+   * Chaos destabilises the island: biomes mutate and volcanoes wake. Run on a
+   * slow timer rather than per frame — these are landscape events, and the
+   * chance values are tuned per-event, not per-tick.
+   */
+  chaosTick() {
+    const fx = this.alignEffects;
+    if (fx.biomeMutationChance <= 0 && fx.eruptionChance <= 0) return;
+
+    if (this.rng() < fx.biomeMutationChance) {
+      const x = (this.rng() - 0.5) * 120, z = (this.rng() - 0.5) * 120;
+      if (!this.terrain.isWater(x, z)) {
+        // A wild swing in moisture, which the ecology then resolves into a
+        // biome change — chaos works through the same system as everything
+        // else rather than writing biomes directly.
+        const wet = this.rng() < 0.5;
+        if (wet) this.ecology.waterAt(x, z, 0.5, 9);
+        else this.ecology.drainAt(x, z, 0.5, 9);
+        this.alignment.mutations = (this.alignment.mutations || 0) + 1;
+        this.msg('The land twists under a chaotic god', new THREE.Vector3(x, this.terrain.getHeight(x, z), z));
+      }
+    }
+
+    if (this.rng() < fx.eruptionChance) {
+      const x = (this.rng() - 0.5) * 110, z = (this.rng() - 0.5) * 110;
+      if (!this.terrain.isWater(x, z)) {
+        this.terrain.deform(x, z, 7, 2.2);          // a new cone shoulders up
+        this.ecology.drainAt(x, z, 0.9, 8);          // ash sterilises the ground
+        this.alignment.eruptions = (this.alignment.eruptions || 0) + 1;
+        this.msg('A volcano erupts!', new THREE.Vector3(x, this.terrain.getHeight(x, z), z));
+      }
+    }
+  }
+
+  /**
+   * Sacrifice a unit for raw divine power. Only an evil god may do this, and
+   * it drives alignment further toward evil and chaos — the power is real but
+   * the cost compounds.
+   *
+   * @returns {number} divine power granted (0 if refused)
+   */
+  sacrifice(creature) {
+    const fx = this.alignEffects;
+    if (!creature || creature.hp <= 0) return 0;
+    if (!fx.canSacrifice) {
+      this.msg('A benevolent god cannot demand blood');
+      return 0;
+    }
+    const gained = fx.sacrificeYield;
+    const side = creature.side;
+    this.stateOf(side).dp += gained;
+    this.alignment.sacrifices = (this.alignment.sacrifices || 0) + 1;
+    nudge(this.alignment, { good: -0.06, order: -0.03 });
+    // Witnesses lose heart.
+    for (const c of this.creatures) {
+      if (c === creature || c.side !== side) continue;
+      if (dist2(c.pos.x, c.pos.z, creature.pos.x, creature.pos.z) < 400) {
+        c.morale = Math.max(0, (c.morale ?? 60) - 18);
+        c.fear = Math.min(1, (c.fear || 0) + 0.35);
+      }
+    }
+    this.killCreature(creature, null, 'sacrifice');
+    this.msg(`A life is spent for power (+${gained.toFixed(0)} ✦)`, creature.pos.clone());
+    return gained;
+  }
+
   // ===================== PHASE 3: CIVILISATION ADVANCEMENT ==================
 
   /** Technological era of a side, derived from the techs it holds. */
@@ -768,11 +845,17 @@ export class Game {
     st.ach.spells++;
     const faith = this.faithLevel(side);
     const center = worldPts[Math.floor(worldPts.length / 2)];
-    // alignment: harmful smites tilt wrathful; rain/heal tilt benevolent
+    // Alignment moves on both axes (Phase 4): harmful smites tilt wrathful,
+    // rain/heal tilt benevolent — and destructive, world-tearing miracles
+    // (quake, storm, meteor) tilt chaotic while nurturing ones tilt orderly.
     if (side === 'player') {
       if (shape === 'star' || shape === 'zigzag' || shape === 'line') nudgeAlignment(this.alignment, -0.04);
       if (shape === 'circle' && !opts.miracle) nudgeAlignment(this.alignment, 0.05);
       if (shape === 'circle_soft') nudgeAlignment(this.alignment, 0.07);
+
+      const CHAOTIC = { zigzag: -0.05, spiral: -0.04, star: -0.035, wave: -0.02 };
+      const ORDERLY = { circle_soft: 0.05, circle: 0.03 };
+      nudge(this.alignment, { order: CHAOTIC[shape] ?? ORDERLY[shape] ?? 0 });
     }
     if (shape === 'circle_soft') this.spellHeal(side, center, faith);
     else if (shape === 'circle') {
@@ -1231,6 +1314,11 @@ export class Game {
       }
     }
     this.ecology.tick(dt);
+
+    // Phase 4: chaotic gods destabilise the island. Landscape-scale events,
+    // so they resolve on their own slow timer.
+    this._chaosTimer = (this._chaosTimer ?? 5) - dt;
+    if (this._chaosTimer <= 0) { this._chaosTimer = 5; this.chaosTick(); }
 
     // Road planning: cheap, but no reason to run it every frame.
     this._roadPlanTimer -= dt;

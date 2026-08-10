@@ -1322,7 +1322,9 @@ export class Building {
       if (l) l.intensity = (this.game.cycles.isNight ? 11 : 5) * (0.4 + health * 0.8);
     }
     if (this.type === 'farm') {
-      this.game.stateOf(this.side).food += dt * 0.8 * this.game.cycles.gatherMul;
+      // Phase 4: a benevolent, orderly god makes the crops come in.
+      this.game.stateOf(this.side).food +=
+        dt * 0.8 * this.game.cycles.gatherMul * (this.game.alignEffects?.cropGrowthMul ?? 1);
     }
     if (this.type === 'forge') {
       // slowly convert rock → metal if stocked
@@ -1396,8 +1398,10 @@ export class ResourceNode {
     if (this.held) return;
     if (this.kind === 'tree' && !this.airborne) {
       if (this.growth < 1.35) {
-        this.growth += dt / 420; // slower growth
-        this.amount = Math.min(18, this.amount + dt * 0.03);
+        // Phase 4: flora grows faster under a good/orderly god, slower under blight.
+        const bloom = this.game.alignEffects?.cropGrowthMul ?? 1;
+        this.growth += (dt / 420) * bloom;
+        this.amount = Math.min(18, this.amount + dt * 0.03 * bloom);
       }
       this.mesh.scale.setScalar(this.baseScale * this.growth);
       const wind = this.game.cycles.wind;

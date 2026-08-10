@@ -34,9 +34,16 @@ export class FocusQueue {
 }
 
 // ============================ GOD ALIGNMENT ============================
-/** Track moral alignment from pets/slaps/spells (−1 evil … +1 good). */
+/**
+ * Track alignment on two independent axes.
+ *   value  −1 evil  … +1 good   (kept under this name: every existing
+ *                                consumer — spellPalette, the ledger snapshot,
+ *                                culture drift — already reads `.value`)
+ *   order  −1 chaos … +1 order  (Phase 4)
+ * See engine/alignment.js for the quadrant labels and gameplay consequences.
+ */
 export function createAlignment() {
-  return { value: 0, kills: 0, heals: 0, pets: 0, slaps: 0 };
+  return { value: 0, order: 0, kills: 0, heals: 0, pets: 0, slaps: 0, sacrifices: 0 };
 }
 
 export function nudgeAlignment(align, delta) {

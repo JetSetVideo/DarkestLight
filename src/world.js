@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { makeFBM, clamp, lerp, pick } from './util.js';
 import { createOcean, createSkyDome } from './ocean.js';
+import { pickWeatherBiased } from './engine/alignment.js';
 
 export const WORLD_SIZE = 160;
 export const SEG = 192;
@@ -943,8 +944,14 @@ export class Cycles {
   get raining() { return this.weather === 'rain' || this.weather === 'storm'; }
   get snowing() { return this.weather === 'snow' || this.weather === 'blizzard'; }
 
+  /**
+   * Pick the next weather. When an alignment is attached (set by Game), the
+   * season table is tilted by it — Order calms the sky, Chaos storms it —
+   * but the season still dominates, so climate isn't overridden by mood.
+   */
   pickWeather(rng) {
     const table = WEATHER_TABLE[this.seasonIndex];
+    if (this.alignment) return pickWeatherBiased(table, this.alignment, rng);
     let tot = 0;
     for (const [, w] of table) tot += w;
     let r = rng() * tot;
