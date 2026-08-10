@@ -12,6 +12,24 @@ import {
 } from './dna.js';
 import * as THREE from 'three';
 
+/**
+ * Back-link a mesh tree to its entity for picking (cursor.js walks up parents
+ * looking for `userData.entity`).
+ *
+ * The link is defined non-enumerable on purpose: THREE.Object3D.copy() deep
+ * clones userData with JSON.parse(JSON.stringify(...)), and an entity holds a
+ * `.game` reference, so an enumerable back-link makes every mesh.clone() throw
+ * on the circular structure. That crashed fog-of-war ghost spawning
+ * (game.js ghostTick). Non-enumerable keeps property access identical while
+ * staying invisible to JSON.stringify.
+ */
+function tagEntity(root, entity) {
+  // Object3D.traverse visits the root itself, then all descendants.
+  root.traverse((o) => Object.defineProperty(o.userData, 'entity', {
+    value: entity, enumerable: false, writable: true, configurable: true,
+  }));
+}
+
 export { GENES, dnaLociTable } from './dna.js';
 
 /** @deprecated use makeGenome — kept for call sites expecting flat phenotypes */
@@ -98,8 +116,7 @@ export class Creature {
     } else {
       this.mesh.position.set(x, this.game.terrain.getHeight(x, z), z);
     }
-    this.mesh.userData.entity = this;
-    this.mesh.traverse(o => { o.userData.entity = this; });
+    tagEntity(this.mesh, this);
     this.game.scene.add(this.mesh);
     this._ensureStatusIcon();
   }
@@ -846,8 +863,7 @@ export class Animal {
     this.vel = new THREE.Vector3();
     this.mesh = buildAnimal(type);
     this.mesh.position.set(x, this.aquatic ? WATER_Y - 0.12 : game.terrain.getHeight(x, z), z);
-    this.mesh.userData.entity = this;
-    this.mesh.traverse(o => { o.userData.entity = this; });
+    tagEntity(this.mesh, this);
     game.scene.add(this.mesh);
     this.moveTimer = 0;
     this.biteTimer = 0;
@@ -976,8 +992,7 @@ export class Monster {
     this.vel = new THREE.Vector3();
     this.mesh = buildMonster(type);
     this.mesh.position.set(x, game.terrain.getHeight(x, z), z);
-    this.mesh.userData.entity = this;
-    this.mesh.traverse(o => { o.userData.entity = this; });
+    tagEntity(this.mesh, this);
     game.scene.add(this.mesh);
     this.lair = new THREE.Vector3(x, 0, z);
     this.target = null;
@@ -1073,8 +1088,7 @@ export class Building {
     this.workers = new Set();
     this.mesh = buildBuilding(type, game.civOf(side));
     this.mesh.position.set(x, Math.max(game.terrain.getHeight(x, z), type === 'bridge' ? WATER_Y : -99), z);
-    this.mesh.userData.entity = this;
-    this.mesh.traverse(o => { o.userData.entity = this; });
+    tagEntity(this.mesh, this);
     if (this.constructing) {
       this.mesh.scale.multiplyScalar(0.15);
       this.mesh.traverse(o => {
@@ -1175,8 +1189,7 @@ export class ResourceNode {
       : kind === 'metal' ? buildMetalOre(game.rng)
       : buildRock(game.rng);
     this.mesh.position.set(x, game.terrain.getHeight(x, z), z);
-    this.mesh.userData.entity = this;
-    this.mesh.traverse(o => { o.userData.entity = this; });
+    tagEntity(this.mesh, this);
     game.scene.add(this.mesh);
     this.grains = kind === 'tree' ? (this.mesh.userData.grains || 6) : 0;
     this.growth = kind === 'tree' ? (sapling ? 0.22 : 0.55 + game.rng() * 0.45) : 1;
@@ -1231,7 +1244,7 @@ export class Holdable {
     this.mesh = kind === 'stick' ? buildStick(game.rng) : buildStick(game.rng);
     this.amount = this.mesh.userData.amount || 1;
     this.mesh.position.set(x, game.terrain.getHeight(x, z), z);
-    this.mesh.userData.entity = this;
+    tagEntity(this.mesh, this);
     game.scene.add(this.mesh);
   }
   get pos() { return this.mesh.position; }
@@ -1245,7 +1258,7 @@ export class Relic {
     this.game = game;
     this.mesh = buildRelic();
     this.mesh.position.set(x, game.terrain.getHeight(x, z), z);
-    this.mesh.userData.entity = this;
+    tagEntity(this.mesh, this);
     game.scene.add(this.mesh);
     this.t = 0;
   }

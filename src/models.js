@@ -3,10 +3,14 @@
 import * as THREE from 'three';
 import { CIVS, CLASSES, BUILDINGS, SPELLS } from './civs.js';
 import { noiseTextureDataURL, mulberry32 } from './util.js';
+import { applyToonShading } from './shaders/toon.js';
 
 const matCache = new Map();
 const texCache = new Map();
 
+// Cel shading is applied at this single chokepoint, so every procedural model
+// in the game is banded without touching any call site. Emissive parts (flames,
+// glows, spell orbs) opt out — quantizing them kills the bloom-ish look.
 export function mat(color, opts = {}) {
   const key = color + '|' + (opts.emissive || 0) + '|' + (opts.flat ? 1 : 0) + '|' + (opts.mapKey || '');
   if (!matCache.has(key)) {
@@ -14,6 +18,7 @@ export function mat(color, opts = {}) {
       color, emissive: opts.emissive || 0x000000, flatShading: true,
     });
     if (opts.mapKey && texCache.has(opts.mapKey)) m.map = texCache.get(opts.mapKey);
+    if (!opts.emissive) applyToonShading(m);
     matCache.set(key, m);
   }
   return matCache.get(key);

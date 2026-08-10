@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EnArché — Phase 0 Cel-Shader Verification</title>
+  <script type="importmap">
+    { "imports": { "three": "./lib/three.module.js" } }
+  </script>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #1b2230; }
+    #lab-canvas { display: block; width: 100%; height: 100%; }
+    #lab-hud {
+      position: fixed; left: 12px; top: 12px; padding: 8px 12px;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #d8e4f2; background: rgba(12, 16, 24, 0.72);
+      border: 1px solid rgba(150, 180, 220, 0.25); border-radius: 6px;
+      pointer-events: none; white-space: nowrap;
+    }
+    #lab-tag {
+      position: fixed; left: 12px; bottom: 12px;
+      font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #8fa3bd; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="lab-canvas"></canvas>
+  <div id="lab-hud">warming up…</div>
+  <div id="lab-tag">Phase 0 — mid-poly toon cube · inverted-hull outlines · banded diffuse + rim</div>
+  <script type="module" src="/src/shaders/toonLab.js"></script>
+</body>
+</html>
