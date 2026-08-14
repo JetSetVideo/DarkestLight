@@ -69,6 +69,8 @@ export const BUILDINGS = {
     role: 'hearth', desc: 'Heart of the tribe. Storage, warmth, reproduction hub.', intent: 'Keep the tribe fed, warm and growing.' },
   hut:      { name: 'Hut',      wood: 25, rock: 5, metal: 0, dp: 0,  hp: 180, buildTime: 18, footprint: 2.8,
     role: 'shelter', desc: '+6 population cap. Race-shaped dwellings.', intent: 'Shelter families and raise children.' },
+  well:     { name: 'Well',     wood: 12, rock: 10, metal: 0, dp: 0,  hp: 140, buildTime: 16, footprint: 2.2,
+    role: 'water', desc: 'Fresh water for the village. Best sunk beside a lake.', intent: 'Draw drinkable water from the land.' },
   farm:     { name: 'Farm',     wood: 30, rock: 0, metal: 0, dp: 0,  hp: 140, buildTime: 22, footprint: 3.5, tech: 'agriculture',
     role: 'food', desc: 'Renewable food source for farmers.', intent: 'Turn soil and seasons into steady food.' },
   barracks: { name: 'Barracks', wood: 40, rock: 15, metal: 5, dp: 20, hp: 280, buildTime: 28, footprint: 3.8, tech: 'warcraft',
@@ -111,13 +113,24 @@ export const SPELLS = [
 
 /** Fauna available to invoke per civ (biome filters applied at cast time). */
 export const INVOKE_FAUNA = {
-  chinese: ['panda', 'deer'],
-  vikings: ['wolf', 'deer'],
-  franks: ['boar', 'deer'],
-  orcs: ['warg', 'boar'],
-  elves: ['deer', 'wolf'],
-  aztecs: ['jaguar', 'snake'],
+  chinese: ['panda', 'deer', 'wolf', 'fish'],
+  vikings: ['wolf', 'deer', 'boar', 'fish'],
+  franks: ['boar', 'deer', 'wolf', 'fish'],
+  orcs: ['warg', 'boar', 'wolf', 'snake'],
+  elves: ['deer', 'wolf', 'panda', 'fish'],
+  aztecs: ['jaguar', 'snake', 'deer', 'fish'],
 };
+
+/** Shape string → spell catalog entry (Lexicon + runtime costs). */
+export const SPELL_BY_SHAPE = Object.fromEntries(SPELLS.map(s => [s.shape, s]));
+SPELL_BY_SHAPE.circle = SPELLS.find(s => s.key === 'rain');
+SPELL_BY_SHAPE.circle_soft = SPELLS.find(s => s.key === 'heal');
+SPELL_BY_SHAPE.circle_hold = SPELLS.find(s => s.key === 'shield');
+SPELL_BY_SHAPE.line = SPELLS.find(s => s.key === 'lightning');
+SPELL_BY_SHAPE.spiral = SPELLS.find(s => s.key === 'storm');
+SPELL_BY_SHAPE.zigzag = SPELLS.find(s => s.key === 'fireball');
+SPELL_BY_SHAPE.zigzag_heavy = SPELLS.find(s => s.key === 'earthquake');
+SPELL_BY_SHAPE.star = SPELLS.find(s => s.key === 'meteor');
 
 // ---------------------------------------------------------------------------
 // Branching tech tree. `req` = parent techs, `excludes` = the other branch of
@@ -183,6 +196,9 @@ export const JOB_LABEL = {
   gatherer: 'Gatherer', hunter: 'Hunter', shaman: 'Shaman',
   farmer: 'Worker', knight: 'Warrior', philosopher: 'Sage', monk: 'Monk',
   king: 'King', queen: 'Queen', princess: 'Maiden',
+  // ACTION role aliases so UI never falls back to a raw key
+  gather: 'Gatherer', hunt: 'Hunter', fight: 'Warrior', lead: 'Sovereign',
+  inspire: 'Maiden', think: 'Sage', pray: 'Monk',
 };
 
 export const FAVORS = [

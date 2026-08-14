@@ -3,10 +3,11 @@
 // chronicle log, inspection panel, branching tech tree panel, build menu,
 // messages and the end-of-game recap screen.
 import * as THREE from 'three';
-import { CIVS, CIV_KEYS, CLASSES, BUILDINGS, TECHS, FAVORS, TITLES, JOB_LABEL } from './civs.js';
+import { CIVS, CIV_KEYS, CLASSES, BUILDINGS, TECHS, FAVORS, JOB_LABEL } from './civs.js';
 import { buildCatalog } from './models.js';
 import { Creature, Animal, Monster, Building, ResourceNode } from './entities.js';
-import { dnaString, dnaLociTable, GENES } from './entities.js';
+import { dnaString, dnaLociTable } from './entities.js';
+import { GENES } from './dna.js';
 import { fmtTime } from './util.js';
 import { WEATHER_META } from './world.js';
 import {
@@ -49,7 +50,7 @@ export class UI {
     $('tech-close').onclick = () => $('tech-panel').classList.add('hidden');
     $('btn-tech').onclick = () => this.toggleTechPanel();
     $('ledger-close')?.addEventListener('click', () => $('ledger-panel').classList.add('hidden'));
-    $('btn-ledger')?.addEventListener('click', () => this.toggleLedger());
+    $('btn-ledger')?.addEventListener('click', () => this.openHearth());
     $('log-toggle').onclick = () => $('log-box').classList.toggle('hidden');
     $('btn-keybind-reset').onclick = () => {
       this.keybinds = resetKeybinds(this.platform.layout);
@@ -74,7 +75,8 @@ export class UI {
       b.title = civ.desc;
       b.onclick = () => {
         this.hideCivSelect();
-        this.onStartGame(this._pendingMode, key);
+        const seed = $('map-seed')?.value?.trim() || '';
+        this.onStartGame(this._pendingMode, key, null, seed);
       };
       list.appendChild(b);
     }
@@ -120,6 +122,13 @@ export class UI {
         if (tool === 'build') this.renderBuildMenu();
         this.onSelectTool(tool);
       };
+    }
+
+    for (const [id, yields] of [['hud-food', 'food'], ['hud-wood', 'wood'], ['hud-rock', 'rock'], ['hud-metal', 'metal']]) {
+      $(id)?.addEventListener('click', () => {
+        if (!this._game) return;
+        this._game.urgeGather('player', yields);
+      });
     }
 
     // remappable key capture + in-game shortcuts
@@ -236,6 +245,7 @@ export class UI {
     $('hud').classList.add('hidden');
     $('inspect').classList.add('hidden');
     $('tech-panel').classList.add('hidden');
+    $('ledger-panel')?.classList.add('hidden');
     if (name) $('screen-' + name)?.classList.remove('hidden');
     if (name === 'menu') this.hideCivSelect();
   }
@@ -305,15 +315,70 @@ export class UI {
     $('clock-moon').style.transform = `rotate(${-(cy.dayFrac - 0.25) * 360}deg)`;
     $('clock-moon').style.opacity = cy.moonOut ? 1 : 0.25;
     const wm = WEATHER_META[cy.weather] || WEATHER_META.sunny;
-    $('hud-weather').textContent = wm.icon;
+    const wx = $('clock-wx');
+    if (wx) wx.textContent = wm.icon;
+    const dayEl = $('clock-day');
+    if (dayEl) dayEl.textContent = String((cy.day || 0) + 1);
+    const clock = $('clock');
+    if (clock) clock.title = `${wm.label} · Day ${(cy.day || 0) + 1} · ${cy.season}`;
+    $('hud-weather') && ($('hud-weather').textContent = wm.icon);
     const faith = game.faithLevel('player');
-    $('hud-weather').title = wm.label + ` · Faith ${Math.round(faith * 100)}%` +
-      (cy.isNight && cy.moonOut ? ' · moonlit night' : cy.isNight ? ' · moonless night' : '');
-    $('hud-season').textContent = `${cy.season} · ${cy.isNight ? (cy.moonOut ? 'Moonlit night' : 'Dark night') : 'Day'} ${cy.day + 1} · ${wm.label} · Faith ${Math.round(faith * 100)}%`;
-    $('hud-score').textContent = `Score ${game.scoreOf('player')}`;
+    const cal = game.calendarInfo?.() || { label: cy.isNight ? 'Night' : 'Day', stanceLabel: 'Indifferent' };
+    const hudWx = $('hud-weather');
+    if (hudWx) {
+      hudWx.title = wm.label + ` · Faith ${Math.round(faith * 100)}%` +
+        (cy.isNight && cy.moonOut ? ' · moonlit night' : cy.isNight ? ' · moonless night' : '');
+    }
+    $('hud-season').textContent = `${cy.season} · ${cal.label} · ${cy.isNight ? (cy.moonOut ? 'Moonlit night' : 'Dark night') : 'Day'} ${cy.day + 1} · ${wm.label} · Faith ${Math.round(faith * 100)}%`;
+    const stanceEl = $('hud-stance');
+    if (stanceEl) {
+      const urge = cal.urge;
+      stanceEl.textContent = urge
+        ? `Urge ${urge.yields} ${Math.ceil(urge.ttl)}s · ${cal.stanceLabel}`
+        : cal.stanceLabel;
+      stanceEl.title = 'Peoples drift toward harmony, opposition, or indifference across days';
+    }
+    for (const [id, y] of [['hud-food', 'food'], ['hud-wood', 'wood'], ['hud-rock', 'rock'], ['hud-metal', 'metal']]) {
+      $(id)?.classList.toggle('urging', !!(cal.urge && cal.urge.yields === y));
+    }
+    const loop = game.loopStatus?.() || {};
+    const goalEl = $('hud-goal');
+    const flockEl = $('hud-flock');
+    const loveEl = $('hud-love');
+    const questEl = $('hud-quest');
+    const scoreEl = $('hud-score');
+    if (goalEl) goalEl.textContent = loop.fantasy || (game.mode === 'battle' ? 'Be their god' : 'Tend the island');
+    if (flockEl) {
+      flockEl.textContent = game.mode === 'battle'
+        ? `Flock ${loop.flock?.[0] ?? 0} vs ${loop.flock?.[1] ?? 0}`
+        : `Flock ${loop.flock?.[0] ?? game.popOf('player')}`;
+    }
+    const loveWrap = $('hud-love-wrap');
+    if (loveEl) {
+      if (game.mode === 'battle') {
+        const pct = Math.round((loop.love || 0) * 100);
+        loveEl.textContent = `Love ${pct}%`;
+        loveEl.classList.toggle('hot', pct >= 45);
+        if (loveWrap) loveWrap.style.display = '';
+      } else if (loveWrap) {
+        loveWrap.style.display = 'none';
+      }
+    }
+    if (questEl) questEl.textContent = loop.questLine || (game.mode === 'battle' ? '—' : 'No clock · shape freely');
+    if (scoreEl) {
+      if (game.mode === 'battle') {
+        const [pv, ev] = loop.vp || [0, 0];
+        scoreEl.textContent = `VP ${pv}–${ev}`;
+        scoreEl.classList.toggle('ahead', pv > ev);
+        scoreEl.classList.toggle('behind', pv < ev);
+      } else {
+        scoreEl.textContent = '';
+        scoreEl.classList.remove('ahead', 'behind');
+      }
+    }
     const align = game.alignmentInfo?.();
     const alignEl = $('hud-align');
-    if (alignEl && align) alignEl.textContent = align.label;
+    if (alignEl && align) alignEl.textContent = align.quadrantLabel || align.label;
     if (game.paused && game.focusQueue?.length) {
       const q = $('hud-focusq');
       if (q) q.textContent = `Focus ×${game.focusQueue.length}`;
@@ -322,21 +387,32 @@ export class UI {
       if (q) q.textContent = '';
     }
     if (this._inspected) this.renderInspect(game, this._inspected);
-    if (!$('ledger-panel')?.classList.contains('hidden')) this.renderLedger(game);
+    $('ledger-panel')?.classList.add('hidden');
+  }
+
+  openHearth() {
+    const game = this._game;
+    const home = game?.homeOf?.('player');
+    if (home) this.inspect(game, home);
   }
 
   toggleLedger() {
-    const panel = $('ledger-panel');
-    if (!panel) return;
-    const open = panel.classList.toggle('hidden') === false;
-    if (open && this._game) this.renderLedger(this._game);
+    this.openHearth();
   }
 
-  renderLedger(game) {
-    const el = $('ledger-body');
-    if (!el || !game) return;
+  _preserveFolds(el, html) {
+    const open = [...el.querySelectorAll('details.fold')].filter(d => d.open).map(d => d.dataset.fold);
+    el.innerHTML = html;
+    for (const id of open) {
+      const d = el.querySelector(`details[data-fold="${id}"]`);
+      if (d) d.open = true;
+    }
+  }
+
+  ledgerFoldHtml(game) {
     const s = game.ledgerStats();
     const align = game.alignmentInfo();
+    const cal = game.calendarInfo?.() || { label: '—', stanceLabel: 'Indifferent', stance: 0 };
     const culture = game.culture?.player;
     const medGenes = ['speed', 'strength', 'intelligence', 'aggression', 'faithAffinity', 'swim', 'fertility', 'skinTone'];
     const bars = medGenes.map(g => {
@@ -346,19 +422,20 @@ export class UI {
     }).join('');
     const races = Object.entries(s.races).map(([k, n]) =>
       `<div class="kv"><b>${k}</b><span>${n}</span></div>`).join('') || '<div class="kv"><b>—</b><span>0</span></div>';
-    el.innerHTML = `
-      <div class="kv"><b>Alignment</b><span>${align.label} (${align.value.toFixed(2)})</span></div>
-      <div class="kv"><b>Population</b><span>${s.pop}</span></div>
+    return `
+      <div class="kv"><b>Alignment</b><span>${align.quadrantLabel || align.label}</span></div>
+      <div class="kv"><b>Peoples</b><span>${cal.stanceLabel}</span></div>
       <div class="kv"><b>Hybrids</b><span>${s.hybrids}</span></div>
       <div class="kv"><b>Flora / Fauna</b><span>${s.flora} / ${s.fauna}</span></div>
-      <div class="kv"><b>Fertility</b><span>${Math.round(s.fertility * 100)}%</span></div>
-      <div class="kv"><b>Faith</b><span>${Math.round(s.faith * 100)}%</span></div>
       <div class="kv"><b>Culture</b><span>${culture ? `${culture.symbol} ${culture.style}` : '—'}</span></div>
-      ${game.avatar?.learned ? `<div class="kv"><b>Avatar mass/agg</b><span>${game.avatar.learned.mass.toFixed(2)} / ${game.avatar.learned.aggression.toFixed(2)}</span></div>` : ''}
       <h4>Races</h4>${races}
-      <h4>Median DNA</h4>${bars}
-      <p class="dna">Pause (❚❚) queues miracles — resume flushes Focus Mode.</p>
-    `;
+      <h4>Median DNA</h4>${bars}`;
+  }
+
+  renderLedger(game) {
+    const el = $('ledger-body');
+    if (!el || !game) return;
+    el.innerHTML = this.ledgerFoldHtml(game);
   }
 
   // ---------------- inspection ----------------
@@ -373,6 +450,32 @@ export class UI {
     $('inspect').classList.remove('hidden');
     this.renderInspect(game, ent);
   }
+  _paintPortrait(canvas, ent) {
+    if (!canvas || !ent) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    ctx.fillStyle = '#1a2030';
+    ctx.fillRect(0, 0, w, h);
+    const skinT = ent.dna?.skinTone ?? 0.5;
+    const hairT = ent.dna?.hairTone ?? 0.5;
+    const r = Math.round(80 + skinT * 120);
+    const g = Math.round(55 + skinT * 90);
+    const b = Math.round(40 + skinT * 70);
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.beginPath();
+    ctx.ellipse(w / 2, h * 0.48, 16, 20, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = `rgb(${Math.round(30 + hairT * 80)},${Math.round(22 + hairT * 40)},${Math.round(18 + hairT * 30)})`;
+    ctx.beginPath();
+    ctx.ellipse(w / 2, h * 0.32, 17, 10, 0, Math.PI, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#1a1410';
+    ctx.beginPath(); ctx.arc(w / 2 - 6, h * 0.48, 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(w / 2 + 6, h * 0.48, 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#3a2a22';
+    ctx.beginPath(); ctx.moveTo(w / 2 - 5, h * 0.62); ctx.quadraticCurveTo(w / 2, h * 0.68, w / 2 + 5, h * 0.62); ctx.stroke();
+  }
+
   closeInspect() {
     this._inspected = null;
     this._game?.setSelected(null);
@@ -385,41 +488,45 @@ export class UI {
 
     if (ent instanceof Creature) {
       if (!game.creatures.includes(ent)) { this.closeInspect(); return; }
-      const state = ent.task === 'sleep' ? '💤 sleeping' : ent.alert > 0 ? '⚠ alert' : ent.task;
-      el.innerHTML = `
-        <h3>${ent.name}</h3>
-        <div class="titleline">${ent.displayTitle}</div>
-        ${kv('Civilization', CIVS[ent.civKey].name)}
-        ${kv('Race / ancestry', ent.raceKey || ent.civKey)}
-        ${kv('Job', JOB_LABEL[ent.cls] || CLASSES[ent.cls].name)}
-        ${ent.titles.length ? kv('Titles', ent.titles.map(t => TITLES[t]?.name || t).join(', ')) : ''}
-        ${kv('Sex / Age', `${ent.sex} · ${Math.floor(ent.age)}y (${ent.lifeStage})`)}
-        ${kv('Lifespan', Math.floor(ent.lifespan) + 'y')}
-        ${kv('Emotion', ent.emotion)}
-        ${kv('State', state)}
-        ${kv('Energy', `${Math.round(ent.energy)}/${ent.maxEnergy}${ent.sprinting ? ' 🏃' : ''}`)}
-        ${kv('Night sight', Math.round(ent.nightSight * 100) + '%')}
-        ${kv('Carrying', `🍖${Math.floor(ent.carrying.food||0)} 🪵${Math.floor(ent.carrying.wood||0)} 🪨${Math.floor(ent.carrying.rock||0)} ⚙️${Math.floor(ent.carrying.metal||0)}`)}
-        <h4>Health</h4>${bar(ent.hp / ent.maxHp)}
-        <h4>Stats (with age malus ×${ent.ageMul.toFixed(2)})</h4>
-        ${kv('Speed', ent.speed.toFixed(2))}
-        ${kv('Strength', ent.strength.toFixed(2))}
-        ${kv('Intelligence', ent.intelligence.toFixed(2))}
-        ${kv('Mass / drag', `${(ent.dna.mass ?? 0.5).toFixed(2)} / ${(ent.dna.windDrag ?? 0.5).toFixed(2)}`)}
-        <h4>Faith</h4>
-        ${kv('Toward you', ent.attitudeToward('player') + ` (${Math.round(ent.beliefs.player)})`)}
-        ${kv('Toward enemy god', ent.attitudeToward('enemy') + ` (${Math.round(ent.beliefs.enemy)})`)}
-        <h4>DNA (XX/YY genome)</h4>
-        <div class="dna">${dnaString(ent.genome || ent.dna)}</div>
-        <div class="dna muted">${dnaLociTable(ent.genome, 12)}</div>
-        <div class="dna">${GENES.slice(0, 12).map(g => `${g}:${(ent.dna[g] ?? 0.5).toFixed(2)}`).join(' · ')}</div>
-        <div class="dna muted">${GENES.slice(12).map(g => `${g}:${(ent.dna[g] ?? 0.5).toFixed(2)}`).join(' · ')}</div>`;
+      const job = JOB_LABEL[ent.cls] || CLASSES[ent.cls].name;
+      const lover = ent.lover && game.creatures.includes(ent.lover) ? ent.lover.name
+        : ent.family?.spouse && game.creatures.includes(ent.family.spouse) ? ent.family.spouse.name : null;
+      const xpLine = ['gather', 'hunt', 'fight', 'build', 'fish']
+        .filter(k => (ent.jobXp?.[k] || 0) > 0.5)
+        .map(k => `${k} ${ent.jobLevel(k)}`)
+        .join(' · ');
+      const carryBits = [];
+      if (ent.carrying.food) carryBits.push(`🍖${Math.floor(ent.carrying.food)}`);
+      if (ent.carrying.wood) carryBits.push(`🪵${Math.floor(ent.carrying.wood)}`);
+      if (ent.carrying.rock) carryBits.push(`🪨${Math.floor(ent.carrying.rock)}`);
+      if (ent.carrying.metal) carryBits.push(`⚙️${Math.floor(ent.carrying.metal)}`);
+      this._preserveFolds(el, `
+        <div class="portrait-row">
+          <canvas class="portrait" width="56" height="68" id="unit-portrait"></canvas>
+          <div>
+            <h3 class="inspect-name">${ent.name}<span class="job-tag">${job}</span></h3>
+            <div class="titleline">${Math.floor(ent.age)}y · ${ent.lifeStage} · ${ent.sex === 'F' ? '♀' : '♂'}</div>
+            ${lover ? kv('Loves', lover) : ''}
+            ${xpLine ? `<div class="xp-row">${xpLine}</div>` : ''}
+            ${carryBits.length ? kv('Carrying', carryBits.join(' ')) : ''}
+            ${kv('Doing', ent.task === 'sleep' ? 'sleeping' : ent.task)}
+          </div>
+        </div>
+        <details class="fold" data-fold="faith">
+          <summary>Faith</summary>
+          ${kv('Toward you', ent.attitudeToward('player') + ` (${Math.round(ent.beliefs.player)})`)}
+        </details>
+        <details class="fold" data-fold="dna">
+          <summary>DNA</summary>
+          <div class="dna">${dnaString(ent.genome || ent.dna)}</div>
+          <div class="dna muted">${dnaLociTable(ent.genome, 12)}</div>
+        </details>`);
+      this._paintPortrait($('unit-portrait'), ent);
     } else if (ent instanceof Building) {
       if (!game.buildings.includes(ent)) { this.closeInspect(); return; }
       const def = BUILDINGS[ent.type];
       if (ent.type === 'campfire') {
         const side = ent.side;
-        const st = game.stateOf(side);
         const pop = game.popOf(side);
         const health = game.tribeHealth(side);
         const label = health > 0.7 ? '🔥 Thriving — the flame burns tall and golden'
@@ -435,24 +542,27 @@ export class UI {
           emotions[c.emotion] = (emotions[c.emotion] || 0) + 1;
           belief += c.beliefs[side];
         }
-        el.innerHTML = `
-          <h3>${def.name} — Tribe of the ${CIVS[game.civOf(side)].name}</h3>
+        this._preserveFolds(el, `
+          <h3>Hearth — ${CIVS[game.civOf(side)].name}</h3>
           <div class="titleline">${label}</div>
-          <h4>Tribe health</h4>${bar(health)}
-          ${kv('Population', `${pop} / ${game.popCap(side)}`)}
-          ${kv('Food', Math.floor(st.food))}
-          ${kv('Wood', Math.floor(st.wood))}
-          ${kv('Rock', Math.floor(st.rock || 0))}
-          ${kv('Metal', Math.floor(st.metal || 0))}
-          ${kv('Divine Points', Math.floor(st.dp))}
+          <h4>Tribe</h4>${bar(health)}
+          ${kv('People', `${pop} / ${game.popCap(side)}`)}
+          ${kv('Circle', `${pop} stones · ${Math.max(0, game.popCap(side) - pop)} empty to the age`)}
+          ${kv('Hearth fuel', `${Math.round(ent.fuel || 0)}`)}
           ${kv('Faith', Math.round(game.faithLevel(side) * 100) + '%')}
-          ${kv('Average devotion', pop ? Math.round(belief / pop) : 0)}
-          ${kv('Technologies', Object.keys(st.techs).length)}
-          <h4>Jobs</h4>
+          ${kv('Age', game.eraOf?.(side) || 'Stone')}
+          <h4>Work</h4>
           ${Object.entries(jobs).map(([k, v]) => kv(k, v)).join('') || '<div class="ach">nobody left</div>'}
-          <h4>Hearts &amp; minds</h4>
-          ${Object.entries(emotions).map(([k, v]) => kv(k, v)).join('')}
-          <h4>Condition</h4>${bar(ent.hp / ent.maxHp)}`;
+          <details class="fold" data-fold="hearts">
+            <summary>Hearts</summary>
+            ${Object.entries(emotions).map(([k, v]) => kv(k, v)).join('')}
+            ${kv('Devotion', pop ? Math.round(belief / pop) : 0)}
+          </details>
+          <details class="fold" data-fold="people">
+            <summary>People &amp; DNA</summary>
+            ${this.ledgerFoldHtml(game)}
+          </details>
+          <h4>Hearth</h4>${bar(ent.hp / ent.maxHp)}`);
         return;
       }
       const deps = game.creatures
@@ -491,7 +601,11 @@ export class UI {
         <h3>${ent.kind[0].toUpperCase() + ent.kind.slice(1)}</h3>
         ${kv('Yields', ent.yields)}
         ${ent.kind === 'tree' ? kv('Growth', Math.round(ent.growth / 1.35 * 100) + '%') + kv('Grains', ent.grains || '—') : ''}
-        ${kv('Remaining', Math.ceil(ent.amount))}`;
+        ${kv('Remaining', Math.ceil(ent.amount))}
+        <button class="hbtn" id="urge-node" style="margin-top:10px">Urge tribe to harvest (8 ✦)</button>`;
+      $('urge-node')?.addEventListener('click', () => {
+        game.urgeGather('player', ent.yields, { node: ent, x: ent.pos.x, z: ent.pos.z });
+      });
     } else {
       el.innerHTML = `<h3>Ancient Relic</h3><div class="ach">Walk a follower close to claim +100 ✦</div>`;
     }
@@ -528,11 +642,12 @@ export class UI {
     if (!g) return;
     const st = g.state.player;
     const el = $('tech-body');
+    const era = g.eraOf?.('player') || 'Stone';
     const techs = g.techsFor('player');
     const tiers = [...new Set(techs.map(t => t.tier))].sort((a, b) => a - b);
     const tierName = ['Stone Age', 'Settlement', 'Craft', 'Mastery', 'Legacy'];
 
-    let html = '<div class="tech-tree">';
+    let html = `<div class="era-banner">${era} Age — spend ✦ down a branch</div><div class="tech-tree">`;
     for (const tier of tiers) {
       html += `<div class="tech-tier"><div class="tier-label">${tierName[tier] || 'Era ' + tier}</div>`;
       for (const t of techs.filter(x => x.tier === tier)) {
@@ -626,16 +741,32 @@ export class UI {
       card.style.setProperty('--accent', civColor);
       const stats = Object.entries(item.stats)
         .map(([k, v]) => `<div class="st"><b>${k}</b><span>${v}</span></div>`).join('');
+      const geneList = item.category === 'flora'
+        ? ['vigor', 'branch', 'trunk', 'height', 'moistureAffinity', 'heatTolerance', 'coldTolerance']
+        : (item.category === 'unit' || item.category === 'animal') ? GENES : null;
+      const geneRows = geneList
+        ? geneList.map(g => `<div class="gene"><b>${g}</b><span>0–9 ×4</span></div>`).join('')
+        : stats;
       card.innerHTML = `
-        <div class="card-img">
-          <img src="${src}" alt="${item.name}">
-          <span class="card-cat">${CAT_ICON[item.category] || '·'} ${item.category}</span>
-        </div>
-        <div class="card-body">
-          <div class="card-name">${item.name}</div>
-          <div class="card-tags">${item.civ !== 'all' ? CIVS[item.civ].name : 'All civilizations'}</div>
-          <div class="card-stats">${stats}</div>
+        <div class="card-inner">
+          <div class="card-front">
+            <div class="card-img">
+              <img src="${src}" alt="${item.name}">
+              <span class="card-cat">${CAT_ICON[item.category] || '·'} ${item.category}</span>
+            </div>
+            <div class="card-body">
+              <div class="card-name">${item.name}</div>
+              <div class="card-tags">${item.civ !== 'all' ? CIVS[item.civ].name : 'All civilizations'}</div>
+              <div class="card-stats">${stats}</div>
+            </div>
+          </div>
+          <div class="card-back">
+            <div class="card-name">${item.name} · DNA</div>
+            ${geneRows}
+            <p class="dna">Age, calories and task XP shift these loci over generations.</p>
+          </div>
         </div>`;
+      card.onclick = () => card.classList.toggle('flipped');
       grid.appendChild(card);
     }
     renderer.dispose();
@@ -658,15 +789,28 @@ export class UI {
   // ---------------- end recap ----------------
   showEnd(result) {
     this.showScreen('end');
-    $('end-title').textContent = result.won ? 'VICTORY' : 'DEFEAT';
+    const pathTitle = {
+      love: result.won ? 'VICTORY · Love' : 'DEFEAT',
+      wrath: result.won ? 'VICTORY · Wrath' : 'DEFEAT',
+      judgement: result.won ? 'VICTORY · Judgement' : 'DEFEAT · Judgement',
+      fallen: 'DEFEAT',
+    };
+    $('end-title').textContent = pathTitle[result.path] || (result.won ? 'VICTORY' : 'DEFEAT');
     $('end-title').style.color = result.won ? 'var(--gold)' : '#c0504d';
     const st = result.state, es = result.enemyState;
+    const bd = result.breakdown;
     const row = (label, a, b) => `
       <div class="recap-row"><span class="rl">${label}</span><span class="rv you">${a}</span><span class="rv foe">${b}</span></div>`;
+    const vpRows = bd ? `
+      ${row('Victory points', result.vp ?? bd.player.total, result.enemyVp ?? bd.enemy.total)}
+      ${row('Land held', `${bd.player.landPct}%`, `${bd.enemy.landPct}%`)}
+      ${row('Era', bd.player.era, bd.enemy.era)}
+      ${row('Faith shrines', bd.player.faithStructures, bd.enemy.faithStructures)}
+      ${row('Quest VP', bd.player.questVP, bd.enemy.questVP)}` : row('Score', result.score, result.enemyScore);
     $('end-body').innerHTML = `
       <p style="color:var(--dim);margin-bottom:14px">${result.how}</p>
       <div class="recap-row head"><span class="rl"></span><span class="rv you">You</span><span class="rv foe">Enemy</span></div>
-      ${row('Score', result.score, result.enemyScore)}
+      ${vpRows}
       ${row('Population', result.pop, result.enemyPop)}
       ${row('Births', st.ach.births, es.ach.births)}
       ${row('Deaths', st.deaths, es.deaths)}

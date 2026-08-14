@@ -41,6 +41,10 @@ check('objectives carry objectiveId + text',
   quests.every(q => q.objectives.every(o => o.objectiveId && o.text)));
 check('all quests start dormant',
   quests.every(q => q.state === QUEST_STATE.DORMANT));
+check('session purpose is to be their god',
+  g1.loopStatus().fantasy === 'Be their god' && /god of the/i.test(g1.loopStatus().brief));
+check('opening quest is Be their god',
+  quests[0]?.title === 'Be their god');
 
 // Loading a hand-authored manifest must work identically.
 const manifest = {
@@ -181,6 +185,9 @@ if (target) {
     else if (o.type === 'TameCompanions') game.civStats.tamed = need;
     else if (o.type === 'CastSpell') game.spellsCast = need;
     else if (o.type === 'RedirectRiver') game.rivers.moves = need;
+    else if (o.type === 'GatherFood') game.state.player.ach.food = need;
+    else if (o.type === 'ConvertSouls') game.state.player.conversions = need;
+    else if (o.type === 'GrowPopulation') { /* absolute pop — already living */ }
   }
   game.quests.tick();
   check('an activated quest resolves when its objectives are met',

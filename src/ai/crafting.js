@@ -110,6 +110,8 @@ export const COMPANIONS = {
   warg: { name: 'Warg', era: 'Fire', tameChance: 0.20, grants: { speed: 1.25 } },
   panda: { name: 'Panda', era: 'Bronze', tameChance: 0.30, grants: { carry: 1.6 } },
   jaguar: { name: 'Jaguar', era: 'Bronze', tameChance: 0.18, grants: { alertRadius: 1.8 } },
+  snake: { name: 'Snake', era: 'Stone', tameChance: 0.22, grants: { alertRadius: 1.25 } },
+  fish: { name: 'Fish', era: 'Stone', tameChance: 0.45, grants: { carry: 1.15 } },
 };
 
 /** Is this species tameable at the civ's current era? */

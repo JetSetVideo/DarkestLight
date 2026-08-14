@@ -16,11 +16,23 @@ The player is a deity. The **Hand** (cursor) grabs, levitates, pets, slaps, scoo
 
 ## Core Loop
 
-1. Two stone-age civs spawn opposite sides (player vs AI).
-2. Victory: **convert** or **exterminate**.
-3. Match timer ≤ 20 minutes + score.
-4. Cycles: day/night, seasons, weather, wind — affect gathering, longevity, throws, spells.
-5. Progress: achievements + **Divine Points** (tech, favors, spells, fauna invoke).
+You are a god. A session is tending a people until the island is theirs — not a deathmatch with a clock.
+
+**Fantasy:** raise a living flock, earn their faith, shape the land, and prevail over the rival god.
+
+**Three ways to prevail (battle):**
+1. **Love** — convert their flock until none remain who deny you.
+2. **Wrath** — exterminate the rival civilization.
+3. **Judgement** — when the appointed hour ends, the island weighs land, people, era, faith, and quests (victory points).
+
+**Nested loops:**
+- **Hand** (seconds): pet, slap, scoop, miracle, urge.
+- **Day:** dawn work → midday rest → afternoon labour → dusk sleep-ring around the fire.
+- **Growth:** food → births → buildings → tech → more faith → stronger miracles.
+- **Rival:** the other god does the same; stance drifts harmony / opposition.
+- **Session:** convert, destroy, or outgrow them before judgement.
+
+Construction mode drops the rival and the clock — tend the island freely.
 
 ---
 
@@ -46,6 +58,7 @@ The player is a deity. The **Hand** (cursor) grabs, levitates, pets, slaps, scoo
 | **Scoop** | Tool scoops wood/food/**water bubble**; drop at camp or nourish land |
 | **Plant paint** | Drag plant tool to seed flora |
 | **Pan** | LMB drag on empty ground (grab-the-map) |
+| **Zoom** | Wheel — close enough to read faces, far enough to see the whole island |
 | **Miracles** | RMB draw shapes (or Spell tool LMB) |
 
 ---
@@ -53,7 +66,7 @@ The player is a deity. The **Hand** (cursor) grabs, levitates, pets, slaps, scoo
 ## 2. Genetics, AI & Populations
 
 ### XX/YY DNA (`src/dna.js`)
-- ~**27 traits** (3× original): speed, intelligence, resilience, strength, responsivity, interactivity, emotion, longevity, nightsight, mass, height, reach, windDrag, swim, climb, curiosity, aggression, loyalty, fertility, faithAffinity, skinTone, hairTone, coatPattern, hornSize, heat/cold/moisture tolerance.
+- ~**28 traits** (3× original): speed, intelligence, resilience, strength, responsivity, interactivity, emotion, longevity, nightsight, mass, height, reach, windDrag, swim, climb, curiosity, aggression, loyalty, fertility, faithAffinity, willpower, skinTone, hairTone, coatPattern, hornSize, heat/cold/moisture tolerance.
 - Each trait = **4 numbers 0–9**: XX from one parent, YY from the other.
 - Phenotype = **0.55×average + 0.45×median** → live gameplay stats.
 - Unique genome **ID** + compact string: `DL-XXXX·race·S9I8… · spe[45\|67] ski[…] fer[…]` (`H` suffix = hybrid).
@@ -69,8 +82,9 @@ The player is a deity. The **Hand** (cursor) grabs, levitates, pets, slaps, scoo
 - **Avatar:** oversized pet of the player civ’s animal; follows camp; learns diet/combat/moral (stub → kin imprint).
 
 ### Group AI
-- Idle adults form respectful arcs before kings/queens; kneel; ranks hold hands.
-- Sensitivity / flocking / influence auras merge or oppose.
+- Swarm layers: **space** (flocking + work parties), **time** (era × season timetable, dusk return), **kin** (sleep ring, children follow parents), **peoples** (harmony / opposition / indifference drifting over days).
+- Dusk / night: citizens close enough to the village walk home and **sleep in a circle around the campfire**.
+- Divine urge: click a HUD resource (or inspect a node) to spend ✦ and force faster gathering.
 
 ---
 
@@ -97,6 +111,9 @@ The player is a deity. The **Hand** (cursor) grabs, levitates, pets, slaps, scoo
 ## 4. Environment & Weather
 
 - Altitude 0 = sea; humidity, temperature, biomes, geological deposits, socle, ground shaders.
+- Battle islands keep a fair river split; construction / story maps skip that symmetry.
+- Village pads are **leveled before** the campfire is placed. The hearth flame, stones and logs grow with the tribe; wood in the fire is fuel, not harvestable.
+- Clips / ledges for walk-around (stairs later). Dawn/dusk sky; people wake before sunrise and sleep after sunset; torches ring the village at night.
 - **Wind lines:** white sinusoidal ribbons; push rain/snow; affect throws; seed propagation.
 - Fog of war, path wear, building pads, geomorphing.
 - Seasonal tint; storm lightning; fertility stamps from rain / water scoops.
@@ -105,7 +122,8 @@ The player is a deity. The **Hand** (cursor) grabs, levitates, pets, slaps, scoo
 
 ## 5. UI & Ledgers
 
-- Resources · DP · time controls · clock · weather · season · score.
+- Resources · DP · time controls · clock · weather · season.
+- **Purpose strip:** flock vs flock · rival love (belief toward you) · VP race · active quest.
 - **Ledger** (DNA/eco medians) · **Influence** overlay · Tech · Chronicle · Inspect.
 - Settings: shadows, particles, fog, camera, match length, **remappable keys**, AZERTY detect, **user report**.
 
@@ -140,6 +158,22 @@ Battle · Construction · Story (stub) · Lexicon · Settings
 | Wind / seeds | `src/world.js`, `seedPropagationTick` |
 | Lexicon | `index.html` tabs, `src/ui.js`, `models.js` catalog |
 | Worldgen | `src/world.js` |
+
+---
+
+## Data at each pipeline step
+
+Canonical catalogs (`CIVS`, `CLASSES`, `SPELLS`/`SPELL_BY_SHAPE`, `BIOMES` + `biomeFlags`/`cellContext`, `GENES`, `COMPANIONS`, `INVOKE_FAUNA`, ecology fertility) are the source of truth. Gameplay imports them instead of repeating magic biome ids.
+
+| Step | Inputs consumed | Outputs |
+|------|-----------------|---------|
+| **Worldgen** | climate ranges, deposit tables, volcanic | `heights`, `humidity`, `temperature`, `biome`, `volcanic`, soil arrays (`loam`/`peat`/`gravel`/…) |
+| **Populate** | `cellContext` flags + fertility | flora/fauna/roster; sparse dry/volcanic, pines on high-cold, palms on hot-wet |
+| **Ticks** | temperature vs heat/cold/moisture genes; fertility on flora/farms; `roads.paved` tint; companion `carry`/`alertRadius`; schedule `build`/`work` | energy, growth, food, movement, labour |
+| **God / Hand** | `SPELL_BY_SHAPE`, humidity/volcanic ignite, `ecology.waterAt` on rain/scoop/lightning, wind on scoop, alignment for invoke | miracles, fauna, stockpiles |
+| **Meta** | `evolutionBiasFor` into `mixGenome`; `alignment.order` + `quadrantLabel`; ledger humidity **and** `fertilityAt` | DNA drift, HUD/ledger, influence wrath/desert rings |
+
+`flushUpgrades()` runs from `Game.update` so queued generated assets actually apply.
 
 ---
 

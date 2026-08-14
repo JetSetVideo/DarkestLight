@@ -48,7 +48,7 @@ check('boar tameable in Stone age', canTame({}, 'boar'));
 check('jaguar NOT tameable in Stone age', !canTame({}, 'jaguar'));
 check('jaguar tameable in Bronze age', canTame({ toolmaking: 1, masonry: 1 }, 'jaguar'));
 check('every companion species exists in the world roster',
-  Object.keys(COMPANIONS).every(s => ['deer', 'boar', 'wolf', 'warg', 'panda', 'jaguar'].includes(s)),
+  Object.keys(COMPANIONS).every(s => ['deer', 'boar', 'wolf', 'warg', 'panda', 'jaguar', 'snake', 'fish'].includes(s)),
   Object.keys(COMPANIONS).join(', '));
 
 // --- 4. Hidden resources ---------------------------------------------------

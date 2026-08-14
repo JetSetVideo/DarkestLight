@@ -47,7 +47,7 @@
       "questId": "t3-align",
       "title": "Two roads at once",
       "description": "Your deeds place you on both the Order-Chaos and Good-Evil axes.",
-      "triggerCondition": { "type": "PopulationReached", "targetValue": "10" },
+      "triggerCondition": { "type": "PopulationReached", "targetValue": "4" },
       "objectives": [
         { "objectiveId": "t3-o3", "text": "Commit to an alignment through your miracles", "type": "CastSpell", "targetAmount": 10 }
       ],

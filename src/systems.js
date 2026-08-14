@@ -103,6 +103,23 @@ export function sampleInfluence(game, side = 'player') {
   // Godly reach = union of high-faith creatures + temples
   const godR = 22 + game.faithLevel(side) * 28;
   if (home) samples.push({ kind: 'god', x: home.pos.x, z: home.pos.z, r: godR, strength: game.faithLevel(side) });
+  // Extra rings: wrathful alignment and ecology desert front (do not replace belief).
+  const alignV = game.alignment?.value ?? 0;
+  if (home && alignV < -0.3) {
+    samples.push({
+      kind: 'wrath', x: home.pos.x, z: home.pos.z,
+      r: 16 + Math.abs(alignV) * 22, strength: Math.abs(alignV),
+    });
+  }
+  if (game.ecology && home) {
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const x = home.pos.x + Math.cos(a) * 16, z = home.pos.z + Math.sin(a) * 16;
+      if (game.ecology.isDesertified(x, z)) {
+        samples.push({ kind: 'desert', x, z, r: 5.5, strength: 0.55 });
+      }
+    }
+  }
   return samples;
 }
 
@@ -122,7 +139,7 @@ export function refreshInfluenceOverlay(group, game, side = 'player') {
     group.remove(ch);
   }
   const samples = sampleInfluence(game, side);
-  const colors = { god: 0xe8c064, village: 0x6aa7c8, belief: 0xc9a0e8 };
+  const colors = { god: 0xe8c064, village: 0x6aa7c8, belief: 0xc9a0e8, wrath: 0xaa3030, desert: 0xd8c68a };
   for (const s of samples) {
     const geo = new THREE.RingGeometry(Math.max(0.5, s.r - 0.35), s.r, 32);
     geo.rotateX(-Math.PI / 2);
@@ -164,15 +181,18 @@ export function buildLedgerStats(game, side = 'player') {
     medians,
     flora,
     fauna,
-    fertility,
+    fertility: fertility.blended,
+    fertilityHumidity: fertility.humidity,
+    fertilityEcology: fertility.eco,
     faith: game.faithLevel(side),
     alignment: game.alignment?.value ?? 0,
+    order: game.alignment?.order ?? 0,
   };
 }
 
 function estimateFertility(game) {
-  // average humidity on land cells near both homes
-  let sum = 0, n = 0;
+  // average humidity on land cells near both homes, plus ecology fertility samples
+  let sum = 0, n = 0, ecoSum = 0, ecoN = 0;
   for (const side of ['player', 'enemy']) {
     const h = game.homeOf(side);
     if (!h) continue;
@@ -181,9 +201,15 @@ function estimateFertility(game) {
       const x = h.pos.x + Math.cos(a) * 10, z = h.pos.z + Math.sin(a) * 10;
       sum += game.terrain.getHumidity?.(x, z) ?? game.terrain.humidity?.[game.terrain.idx(x, z)] ?? 0.5;
       n++;
+      if (game.ecology?.fertilityAt) {
+        ecoSum += game.ecology.fertilityAt(x, z);
+        ecoN++;
+      }
     }
   }
-  return n ? sum / n : 0.5;
+  const humidity = n ? sum / n : 0.5;
+  const eco = ecoN ? ecoSum / ecoN : humidity;
+  return { humidity, eco, blended: (humidity + eco) * 0.5 };
 }
 
 /** Dominant culture profile from median DNA of a side. */

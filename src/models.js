@@ -59,6 +59,204 @@ function sph(r, color, x = 0, y = 0, z = 0, seg = 8) {
   return m;
 }
 
+/** Soft sinusoidal flame — vertices scallop instead of a sharp cone. */
+function makeSinFlame(radius, height, color, emissive) {
+  const segs = 16, rings = 14;
+  const geo = new THREE.CylinderGeometry(0.015, radius, height, segs, rings, true);
+  geo.translate(0, height * 0.5, 0);
+  const pos = geo.attributes.position;
+  const rest = new Float32Array(pos.array.length);
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const t = Math.max(0, y / height);
+    const ang = Math.atan2(z, x);
+    const r = Math.hypot(x, z) * (1 + 0.22 * Math.sin(ang * 4 + t * 7));
+    rest[i * 3] = Math.cos(ang) * r;
+    rest[i * 3 + 1] = y;
+    rest[i * 3 + 2] = Math.sin(ang) * r;
+    pos.setXYZ(i, rest[i * 3], y, rest[i * 3 + 2]);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+    color, emissive, transparent: true, opacity: 0.92, side: THREE.DoubleSide, depthWrite: false,
+  }));
+  m.userData.rest = rest;
+  m.userData.height = height;
+  m.userData.hearthFuel = true;
+  m.castShadow = false;
+  return m;
+}
+
+function markFuel(obj) {
+  obj.userData.hearthFuel = true;
+  obj.traverse((o) => { o.userData.hearthFuel = true; });
+  return obj;
+}
+
+/** Drive flame, stones, logs and perimeter torches from village state. */
+export function updateCampfireVisual(mesh, {
+  health = 0.5, fuel = 20, eraTier = 0, t = 0, night = false, wind = 0.2,
+  pop = 4, popCap = 14, rock = 8, wood = 20,
+} = {}) {
+  const ud = mesh.userData;
+  const fuelN = Math.max(0, Math.min(1, fuel / 80));
+  const woodN = Math.max(0, Math.min(1, (wood || 0) / 60));
+  const vigor = 0.28 + health * 0.5 + fuelN * 0.4 + Math.min(0.35, pop * 0.04);
+  const wave = (flame, speed, amp) => {
+    if (!flame?.userData?.rest) return;
+    const pos = flame.geometry.attributes.position;
+    const rest = flame.userData.rest;
+    const h = flame.userData.height || 1;
+    for (let i = 0; i < pos.count; i++) {
+      const y = rest[i * 3 + 1];
+      const tt = y / h;
+      const ang = Math.atan2(rest[i * 3 + 2], rest[i * 3]);
+      const wiggle = Math.sin(t * speed + ang * 3 + tt * 9) * amp * tt;
+      const lean = Math.sin(t * 1.7 + tt * 2) * wind * 0.2 * tt;
+      pos.setXYZ(
+        i,
+        rest[i * 3] + wiggle + lean,
+        y,
+        rest[i * 3 + 2] + Math.cos(t * speed * 0.85 + ang * 2) * amp * tt * 0.7,
+      );
+    }
+    pos.needsUpdate = true;
+  };
+  wave(ud.flame, 7.5, 0.08 * vigor);
+  wave(ud.flame2, 11, 0.055 * vigor);
+  const extra = ud.flames || [];
+  const nFlames = 1 + Math.min(extra.length, Math.floor(pop * 0.35 + health * 3 + fuelN * 2));
+  extra.forEach((f, i) => {
+    f.visible = i < nFlames - 2;
+    if (f.visible) wave(f, 8 + i, 0.05 * vigor);
+    if (f.visible) f.scale.set(0.55 + vigor * 0.4, 0.5 + vigor * 0.7, 0.55 + vigor * 0.4);
+  });
+  if (ud.flame) {
+    ud.flame.scale.set(vigor, 0.55 + vigor * 1.15, vigor);
+    ud.flame.material.emissive.setHex(health > 0.7 ? 0xdd7710 : health > 0.35 ? 0xbb4410 : 0x882211);
+    ud.flame.material.color.setHex(health > 0.7 ? 0xffb040 : health > 0.35 ? 0xff8c2e : 0xcc4422);
+  }
+  if (ud.flame2) ud.flame2.scale.set(vigor * 0.72, 0.75 + vigor * 0.8, vigor * 0.72);
+  if (ud.light) ud.light.intensity = (night ? 13 : 5.5) * (0.3 + vigor * 0.9);
+
+  const cubeish = Math.min(1, eraTier / 3);
+  const rockGrow = 0.72 + Math.min(1.35, (rock || 0) / 36);
+  const stones = ud.stones || [];
+  const cap = Math.min(stones.length, Math.max(1, popCap | 0));
+  const filled = Math.min(cap, Math.max(0, pop | 0));
+  const ringR = 1.15 + Math.min(1.6, cap * 0.055);
+  for (let i = 0; i < stones.length; i++) {
+    const st = stones[i];
+    const inCircle = i < cap;
+    const living = i < filled;
+    st.visible = inCircle;
+    const a = (i / Math.max(1, cap)) * Math.PI * 2 + 0.08;
+    st.position.set(Math.cos(a) * ringR, 0.06, Math.sin(a) * ringR);
+    if (st.userData.socket) st.userData.socket.visible = inCircle && !living;
+    if (st.userData.round) st.userData.round.visible = living && cubeish < 0.62;
+    if (st.userData.block) {
+      st.userData.block.visible = living && cubeish >= 0.28;
+      st.userData.block.scale.setScalar(0.7 + cubeish * 0.55);
+    }
+    if (living) st.scale.setScalar(rockGrow);
+    else st.scale.setScalar(0.55);
+  }
+  const logs = ud.logs || [];
+  const show = Math.max(1, Math.round(2 + woodN * Math.max(0, logs.length - 2) + fuelN * 2));
+  for (let i = 0; i < logs.length; i++) logs[i].visible = i < show;
+
+  for (const tr of ud.torches || []) {
+    const glow = tr.userData.glow;
+    const light = tr.userData.light;
+    if (glow) {
+      glow.visible = night;
+      glow.material.emissiveIntensity = night ? 1.1 : 0;
+    }
+    if (light) light.intensity = night ? 2.6 : 0;
+  }
+}
+
+function buildCampfireMesh() {
+  const g = new THREE.Group();
+  const stones = [];
+  const SLOTS = 28;
+  for (let i = 0; i < SLOTS; i++) {
+    const a = (i / SLOTS) * Math.PI * 2 + 0.08;
+    const r = 0.95;
+    const slot = new THREE.Group();
+    slot.position.set(Math.cos(a) * r, 0.06, Math.sin(a) * r);
+    const socket = cyl(0.11, 0.12, 0.04, 8, 0x4a463c, 0, 0.01, 0);
+    socket.material = socket.material.clone();
+    socket.material.transparent = true;
+    socket.material.opacity = 0.35;
+    const round = sph(0.14, 0x8a8578, 0, 0.06, 0, 10);
+    round.scale.y = 0.62;
+    const block = box(0.26, 0.15, 0.24, 0x7a766c, 0, 0.07, 0);
+    block.visible = false;
+    slot.add(socket, round, block);
+    slot.userData.socket = socket;
+    slot.userData.round = round;
+    slot.userData.block = block;
+    markFuel(slot);
+    g.add(slot);
+    stones.push(slot);
+  }
+  const logs = [];
+  for (let i = 0; i < 12; i++) {
+    const log = cyl(0.055 + (i % 4) * 0.012, 0.05, 0.7 + (i % 5) * 0.12, 7, 0x6b4f30, 0, 0.12, 0);
+    log.rotation.z = Math.PI / 2.35;
+    log.rotation.y = (i / 12) * Math.PI * 2 + i * 0.11;
+    log.position.y = 0.11 + (i % 3) * 0.04;
+    markFuel(log);
+    g.add(log);
+    logs.push(log);
+  }
+  const flame = makeSinFlame(0.38, 1.05, 0xff8c2e, 0xdd5510);
+  const flame2 = makeSinFlame(0.2, 0.72, 0xffd050, 0xcc9910);
+  flame2.position.y = 0.12;
+  g.add(flame, flame2);
+  const extraFlames = [];
+  for (let i = 0; i < 4; i++) {
+    const f = makeSinFlame(0.14, 0.55, 0xffa030, 0xcc4408);
+    f.position.set(Math.cos(i * 1.7) * 0.22, 0.08, Math.sin(i * 1.7) * 0.22);
+    f.visible = false;
+    markFuel(f);
+    g.add(f);
+    extraFlames.push(f);
+  }
+  const light = new THREE.PointLight(0xff9540, 8, 14);
+  light.position.y = 1.15;
+  g.add(light);
+
+  const torches = [];
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + 0.4;
+    const tr = new THREE.Group();
+    tr.position.set(Math.cos(a) * 6.2, 0, Math.sin(a) * 6.2);
+    const pole = cyl(0.04, 0.05, 1.15, 6, 0x5d4a33, 0, 0.55, 0);
+    const bowl = cyl(0.08, 0.05, 0.1, 6, 0x6b4f30, 0, 1.12, 0);
+    const glow = sph(0.09, 0xffa040, 0, 1.22, 0, 8);
+    glow.material = new THREE.MeshLambertMaterial({ color: 0xffa040, emissive: 0xcc5500, emissiveIntensity: 0 });
+    const tl = new THREE.PointLight(0xff9030, 0, 7);
+    tl.position.y = 1.22;
+    tr.add(pole, bowl, glow, tl);
+    tr.userData.glow = glow;
+    tr.userData.light = tl;
+    g.add(tr);
+    torches.push(tr);
+  }
+
+  g.userData.flame = flame;
+  g.userData.flame2 = flame2;
+  g.userData.flames = extraFlames;
+  g.userData.light = light;
+  g.userData.stones = stones;
+  g.userData.logs = logs;
+  g.userData.torches = torches;
+  return g;
+}
+
 // ============================ HUMANOIDS ============================
 // Smaller stature; torso split into hips / belly / chest; articulated limbs
 // with shoulders, elbows, knees, spherical hands; noise-patterned cloth/skin.
@@ -73,47 +271,63 @@ export function buildHuman(civKey, clsKey, titles = []) {
   const SCALE = 0.68; // individuals are smaller than trees/houses
 
   // --- 3 connected torso parts ---
-  const hips = cyl(0.11, 0.13, 0.14, 10, cloth, 0, 0.42, 0, clothKey);
-  const belly = cyl(0.13, 0.12, 0.16, 10, cloth, 0, 0.56, 0, clothKey);
-  const chest = cyl(0.12, 0.14, 0.18, 10, cloth, 0, 0.72, 0, clothKey);
+  const hips = cyl(0.11, 0.13, 0.14, 12, cloth, 0, 0.42, 0, clothKey);
+  const belly = cyl(0.13, 0.12, 0.16, 12, cloth, 0, 0.56, 0, clothKey);
+  const chest = cyl(0.12, 0.14, 0.18, 12, cloth, 0, 0.72, 0, clothKey);
   g.add(hips, belly, chest);
 
   // shoulders
-  const shL = sph(0.07, skin, -0.16, 0.82, 0, 10);
-  const shR = sph(0.07, skin, 0.16, 0.82, 0, 10);
+  const shL = sph(0.07, skin, -0.16, 0.82, 0, 12);
+  const shR = sph(0.07, skin, 0.16, 0.82, 0, 12);
   g.add(shL, shR);
 
   // head + nose
-  const head = sph(0.115, skin, 0, 0.98, 0, 12);
-  const nose = cone(0.025, 0.05, 6, skin, 0, 0.97, 0.11);
+  const head = sph(0.115, skin, 0, 0.98, 0, 14);
+  const nose = cone(0.025, 0.05, 8, skin, 0, 0.97, 0.11);
   nose.rotation.x = Math.PI / 2;
   g.add(head, nose);
 
-  // legs with knees (upper + lower)
-  const thighL = box(0.07, 0.16, 0.07, 0x3a3226, -0.07, 0.28, 0);
-  const thighR = box(0.07, 0.16, 0.07, 0x3a3226, 0.07, 0.28, 0);
-  const kneeL = sph(0.04, skin, -0.07, 0.18, 0, 8);
-  const kneeR = sph(0.04, skin, 0.07, 0.18, 0, 8);
-  const shinL = box(0.06, 0.15, 0.06, 0x3a3226, -0.07, 0.09, 0);
-  const shinR = box(0.06, 0.15, 0.06, 0x3a3226, 0.07, 0.09, 0);
-  g.add(thighL, thighR, kneeL, kneeR, shinL, shinR);
+  // Articulated legs: groups pivot at the hip / knee so walk and run read as a gait.
+  const makeLeg = (side) => {
+    const thigh = new THREE.Group();
+    thigh.position.set(side * 0.075, 0.30, 0);
+    const thighM = box(0.075, 0.16, 0.085, 0x3a3226, 0, -0.08, 0);
+    const knee = sph(0.042, skin, 0, -0.17, 0, 10);
+    const shin = new THREE.Group();
+    shin.position.set(0, -0.17, 0);
+    const shinM = box(0.065, 0.14, 0.07, 0x3a3226, 0, -0.07, 0);
+    const foot = box(0.075, 0.038, 0.13, 0x2a241c, 0, -0.155, 0.035);
+    shin.add(shinM, foot);
+    thigh.add(thighM, knee, shin);
+    g.add(thigh);
+    return { thigh, shin, knee, foot };
+  };
+  const legL = makeLeg(-1);
+  const legR = makeLeg(1);
 
-  // arms with elbows + spherical hands
-  const uArmL = box(0.055, 0.14, 0.055, skin, -0.22, 0.74, 0);
-  const uArmR = box(0.055, 0.14, 0.055, skin, 0.22, 0.74, 0);
-  const elbL = sph(0.035, skin, -0.22, 0.64, 0, 8);
-  const elbR = sph(0.035, skin, 0.22, 0.64, 0, 8);
-  const lArmL = box(0.05, 0.13, 0.05, skin, -0.22, 0.55, 0);
-  const lArmR = box(0.05, 0.13, 0.05, skin, 0.22, 0.55, 0);
-  const handL = sph(0.04, skin, -0.22, 0.46, 0, 8);
-  const handR = sph(0.04, skin, 0.22, 0.46, 0, 8);
-  g.add(uArmL, uArmR, elbL, elbR, lArmL, lArmR, handL, handR);
+  const makeArm = (side) => {
+    const arm = new THREE.Group();
+    arm.position.set(side * 0.16, 0.80, 0);
+    const uArm = box(0.055, 0.14, 0.055, skin, 0, -0.07, 0);
+    const elb = sph(0.035, skin, 0, -0.15, 0, 10);
+    const lArm = new THREE.Group();
+    lArm.position.set(0, -0.15, 0);
+    const lArmM = box(0.05, 0.13, 0.05, skin, 0, -0.07, 0);
+    const hand = sph(0.04, skin, 0, -0.15, 0, 10);
+    lArm.add(lArmM, hand);
+    arm.add(uArm, elb, lArm);
+    g.add(arm);
+    return { arm, lArm, hand, elb };
+  };
+  const armL = makeArm(-1);
+  const armR = makeArm(1);
 
-  // kinematic handles (animate these)
   g.userData.limbs = {
-    legL: thighL, legR: thighR, shinL, shinR, kneeL, kneeR,
-    armL: uArmL, armR: uArmR, lArmL, lArmR, elbL, elbR,
-    handL, handR, shL, shR, hips, belly, chest, head, nose,
+    legL: legL.thigh, legR: legR.thigh, shinL: legL.shin, shinR: legR.shin,
+    kneeL: legL.knee, kneeR: legR.knee, footL: legL.foot, footR: legR.foot,
+    armL: armL.arm, armR: armR.arm, lArmL: armL.lArm, lArmR: armR.lArm,
+    elbL: armL.elb, elbR: armR.elb, handL: armL.hand, handR: armR.hand,
+    shL, shR, hips, belly, chest, head, nose,
   };
   g.userData.kinematic = true;
 
@@ -199,73 +413,102 @@ export function buildAnimal(type) {
   const g = new THREE.Group();
   if (type === 'snake') {
     const segs = [];
-    for (let i = 0; i < 6; i++) {
-      const s = sph(0.09 - i * 0.008, i % 2 ? 0x5a7a3a : 0x6f8f4a, Math.sin(i * 1.4) * 0.12, 0.08, -i * 0.16, 6);
+    for (let i = 0; i < 10; i++) {
+      const s = sph(0.095 - i * 0.006, i % 2 ? 0x5a7a3a : 0x6f8f4a, Math.sin(i * 1.15) * 0.1, 0.07, -i * 0.13, 10);
       g.add(s); segs.push(s);
     }
-    const head = sph(0.1, 0x50702f, Math.sin(-1.4) * 0.12, 0.1, 0.15, 6);
-    g.add(head, sph(0.02, 0xd7263d, head.position.x, 0.12, 0.27, 4));
+    const head = sph(0.11, 0x50702f, 0, 0.1, 0.16, 12);
+    g.add(head, sph(0.025, 0xd7263d, 0.02, 0.11, 0.28, 6));
+    g.add(sph(0.018, 0x101010, 0.07, 0.13, 0.2, 6), sph(0.018, 0x101010, -0.07, 0.13, 0.2, 6));
     g.userData.slither = true;
     g.userData.limbs = { segs, head };
     g.userData.kinematic = true;
     return g;
   }
   if (type === 'fish') {
-    const body = sph(0.16, 0x6aa7c8, 0, 0, 0, 7);
-    body.scale.set(1.6, 0.8, 0.7);
-    const tail = cone(0.1, 0.18, 4, 0x578cab, -0.3, 0, 0);
+    const body = sph(0.17, 0x6aa7c8, 0, 0, 0, 12);
+    body.scale.set(1.7, 0.75, 0.65);
+    const tail = cone(0.11, 0.2, 8, 0x578cab, -0.32, 0, 0);
     tail.rotation.z = Math.PI / 2;
-    const fin = cone(0.05, 0.12, 4, 0x578cab, 0.02, 0.13, 0);
-    g.add(body, tail, fin, sph(0.025, 0x10202c, 0.2, 0.03, 0.09, 4));
+    const fin = cone(0.05, 0.14, 6, 0x578cab, 0.02, 0.14, 0);
+    const finL = cone(0.04, 0.1, 6, 0x4e7a98, 0.02, 0, 0.12);
+    finL.rotation.x = 0.9;
+    g.add(body, tail, fin, finL, sph(0.028, 0x10202c, 0.22, 0.04, 0.08, 6));
+    g.scale.setScalar(0.42);
     g.userData.fish = true;
     g.userData.limbs = { body, tail, fin };
     g.userData.kinematic = true;
     return g;
   }
   const A = {
-    panda: { body: 0xf0f0ea, head: 0xf0f0ea, dark: 0x2a2a2a, scale: 1 },
-    wolf: { body: 0x8a8f99, head: 0x9aa0aa, dark: 0x4a4f58, scale: 0.9 },
-    boar: { body: 0x6b4f35, head: 0x7a5c3f, dark: 0x3f2e1e, scale: 0.85 },
-    warg: { body: 0x55584a, head: 0x606352, dark: 0x33352c, scale: 1.05 },
-    deer: { body: 0xb08d5e, head: 0xbd9a6b, dark: 0x6f5636, scale: 0.9 },
-    jaguar: { body: 0xd9a441, head: 0xe0ac4c, dark: 0x6e5220, scale: 0.9 },
-  }[type] || { body: 0x999999, head: 0xaaaaaa, dark: 0x555555, scale: 1 };
+    panda: { body: 0xf0f0ea, head: 0xf0f0ea, dark: 0x2a2a2a, scale: 1.05, long: 0.72, tall: 0.42, snout: 0.07 },
+    wolf: { body: 0x8a8f99, head: 0x9aa0aa, dark: 0x4a4f58, scale: 0.95, long: 0.85, tall: 0.38, snout: 0.12 },
+    boar: { body: 0x6b4f35, head: 0x7a5c3f, dark: 0x3f2e1e, scale: 0.92, long: 0.7, tall: 0.44, snout: 0.14 },
+    warg: { body: 0x55584a, head: 0x606352, dark: 0x33352c, scale: 1.12, long: 0.95, tall: 0.42, snout: 0.14 },
+    deer: { body: 0xb08d5e, head: 0xbd9a6b, dark: 0x6f5636, scale: 0.95, long: 0.78, tall: 0.4, snout: 0.08 },
+    jaguar: { body: 0xd9a441, head: 0xe0ac4c, dark: 0x6e5220, scale: 0.95, long: 0.8, tall: 0.36, snout: 0.1 },
+  }[type] || { body: 0x999999, head: 0xaaaaaa, dark: 0x555555, scale: 1, long: 0.7, tall: 0.38, snout: 0.1 };
 
-  const body = box(0.6, 0.35, 0.3, A.body, 0, 0.42, 0);
-  const head = sph(0.15, A.head, 0.38, 0.55, 0, 10);
-  const snout = sph(0.08, A.head, 0.52, 0.5, 0, 8);
-  g.add(body, head, snout);
-  // ears
-  g.add(sph(0.05, A.dark, 0.34, 0.72, -0.08, 6), sph(0.05, A.dark, 0.34, 0.72, 0.08, 6));
-  // eyes + teeth hint
-  g.add(sph(0.025, 0x101010, 0.48, 0.58, -0.07, 5), sph(0.025, 0x101010, 0.48, 0.58, 0.07, 5));
-  g.add(cone(0.015, 0.04, 4, 0xe8e0d0, 0.58, 0.46, -0.03), cone(0.015, 0.04, 4, 0xe8e0d0, 0.58, 0.46, 0.03));
+  const torso = cyl(A.tall * 0.42, A.tall * 0.48, A.long, 14, A.body, 0, A.tall, 0);
+  torso.rotation.z = Math.PI / 2;
+  const chest = sph(A.tall * 0.48, A.body, A.long * 0.28, A.tall + 0.02, 0, 12);
+  const rump = sph(A.tall * 0.46, A.body, -A.long * 0.28, A.tall, 0, 12);
+  const neck = cyl(0.08, 0.11, 0.18, 10, A.head, A.long * 0.38, A.tall + 0.12, 0);
+  const head = sph(0.16, A.head, A.long * 0.48, A.tall + 0.22, 0, 12);
+  const snout = sph(A.snout, A.head, A.long * 0.48 + 0.14, A.tall + 0.16, 0, 10);
+  g.add(torso, chest, rump, neck, head, snout);
+  g.add(sph(0.055, A.dark, A.long * 0.46, A.tall + 0.36, -0.08, 8), sph(0.055, A.dark, A.long * 0.46, A.tall + 0.36, 0.08, 8));
+  g.add(sph(0.028, 0x101010, A.long * 0.55, A.tall + 0.26, -0.07, 6), sph(0.028, 0x101010, A.long * 0.55, A.tall + 0.26, 0.07, 6));
+
   const legs = [];
-  for (const [x, z] of [[-0.2, -0.1], [-0.2, 0.1], [0.2, -0.1], [0.2, 0.1]]) {
-    const thigh = box(0.08, 0.14, 0.08, A.dark, x, 0.22, z);
-    const knee = sph(0.04, A.body, x, 0.14, z, 5);
-    const shin = box(0.07, 0.12, 0.07, A.dark, x, 0.07, z);
-    g.add(thigh, knee, shin); legs.push(thigh, shin);
+  const hipY = A.tall * 0.55;
+  for (const [lx, lz] of [[-A.long * 0.28, -0.12], [-A.long * 0.28, 0.12], [A.long * 0.22, -0.12], [A.long * 0.22, 0.12]]) {
+    const thigh = new THREE.Group();
+    thigh.position.set(lx, hipY, lz);
+    const thighM = cyl(0.045, 0.05, 0.16, 8, A.dark, 0, -0.08, 0);
+    const shin = new THREE.Group();
+    shin.position.set(0, -0.16, 0);
+    const shinM = cyl(0.035, 0.04, 0.14, 8, A.dark, 0, -0.07, 0);
+    const paw = sph(0.045, A.dark, 0, -0.15, 0.02, 8);
+    shin.add(shinM, paw);
+    thigh.add(thighM, shin);
+    g.add(thigh);
+    legs.push(thigh);
   }
+
   if (type === 'panda') {
-    g.add(sph(0.07, A.dark, 0.44, 0.7, -0.09, 6), sph(0.07, A.dark, 0.44, 0.7, 0.09, 6));
-    g.add(box(0.28, 0.16, 0.31, A.dark, -0.05, 0.42, 0));
+    g.add(sph(0.08, A.dark, A.long * 0.5, A.tall + 0.28, -0.1, 8), sph(0.08, A.dark, A.long * 0.5, A.tall + 0.28, 0.1, 8));
+    g.add(cyl(0.16, 0.18, 0.22, 10, A.dark, 0, A.tall, 0));
   }
   if (type === 'deer') {
-    g.add(cone(0.02, 0.25, 4, 0x8a6f47, 0.34, 0.78, -0.08), cone(0.02, 0.25, 4, 0x8a6f47, 0.34, 0.78, 0.08));
+    const ant = (z) => {
+      const a = cyl(0.012, 0.018, 0.28, 6, 0x8a6f47, A.long * 0.46, A.tall + 0.42, z);
+      const b = cyl(0.01, 0.012, 0.12, 5, 0x8a6f47, A.long * 0.42, A.tall + 0.5, z + 0.04);
+      b.rotation.z = 0.6;
+      g.add(a, b);
+    };
+    ant(-0.07); ant(0.07);
   }
   if (type === 'boar' || type === 'warg') {
-    g.add(cone(0.03, 0.1, 4, 0xe8e0d0, 0.5, 0.48, -0.06), cone(0.03, 0.1, 4, 0xe8e0d0, 0.5, 0.48, 0.06));
+    g.add(cone(0.025, 0.12, 6, 0xe8e0d0, A.long * 0.58, A.tall + 0.12, -0.05));
+    g.add(cone(0.025, 0.12, 6, 0xe8e0d0, A.long * 0.58, A.tall + 0.12, 0.05));
   }
-  if (type === 'jaguar') for (let i = 0; i < 5; i++)
-    g.add(sph(0.03, A.dark, -0.2 + i * 0.1, 0.62, (i % 2 ? 0.12 : -0.12), 5));
-  if (type === 'wolf' || type === 'warg')
-    g.add(cone(0.05, 0.12, 4, A.dark, 0.32, 0.72, -0.07), cone(0.05, 0.12, 4, A.dark, 0.32, 0.72, 0.07));
-  // articulated tail
-  const tailBase = box(0.06, 0.06, 0.12, A.dark, -0.28, 0.5, 0);
-  const tailTip = sph(0.045, A.dark, -0.42, 0.48, 0, 6);
-  g.add(tailBase, tailTip);
-  g.userData.limbs = { legs, body, head, snout, tail: tailBase, tailTip };
+  if (type === 'jaguar') {
+    for (let i = 0; i < 8; i++)
+      g.add(sph(0.035, A.dark, -0.25 + i * 0.08, A.tall + 0.18, (i % 2 ? 0.12 : -0.12), 6));
+  }
+  if (type === 'wolf' || type === 'warg') {
+    g.add(cone(0.045, 0.11, 6, A.dark, A.long * 0.44, A.tall + 0.38, -0.07));
+    g.add(cone(0.045, 0.11, 6, A.dark, A.long * 0.44, A.tall + 0.38, 0.07));
+  }
+  const tailBase = new THREE.Group();
+  tailBase.position.set(-A.long * 0.4, A.tall + 0.06, 0);
+  const tailM = cyl(0.025, 0.04, 0.28, 8, A.dark, 0, 0, -0.12);
+  tailM.rotation.x = Math.PI / 2;
+  const tailTip = sph(0.04, A.dark, 0, 0, -0.28, 8);
+  tailBase.add(tailM, tailTip);
+  g.add(tailBase);
+  g.userData.limbs = { legs, body: torso, head, snout, tail: tailBase, tailTip };
   g.userData.kinematic = true;
   g.scale.setScalar(A.scale);
   return g;
@@ -350,12 +593,14 @@ export function buildMonster(type) {
 }
 
 // ============================ FLORA ============================
-export function buildTree(kind = 'oak', rng = Math.random) {
+export function buildTree(kind = 'oak', rng = Math.random, dna = null) {
   const g = new THREE.Group();
-  // smaller trees, slow growers — variance in trunk lean, radius, canopy
-  const s = 0.72 + rng() * 0.45;
-  const trunkLen = (kind === 'palm' ? 1.5 : kind === 'pine' ? 0.85 : 0.7) * (0.85 + rng() * 0.35);
-  const trunkR = (0.07 + rng() * 0.05) * (kind === 'pine' ? 0.9 : 1);
+  const vigor = dna?.vigor ?? (0.55 + rng() * 0.45);
+  const branchN = dna?.branch ?? vigor;
+  const trunkG = dna?.trunk ?? vigor;
+  const s = 0.62 + vigor * 0.55;
+  const trunkLen = (kind === 'palm' ? 1.5 : kind === 'pine' ? 0.85 : 0.7) * (0.75 + trunkG * 0.5);
+  const trunkR = (0.06 + trunkG * 0.07) * (kind === 'pine' ? 0.9 : 1);
   const lean = (rng() - 0.5) * 0.18;
   const yaw = rng() * Math.PI * 2;
   const woodKey = ensureNoiseTex((rng() * 1e9) | 0, 0x6b4f30);
@@ -364,6 +609,23 @@ export function buildTree(kind = 'oak', rng = Math.random) {
   const trunk = cyl(trunkR * 0.75, trunkR, trunkLen, segs, 0x6b4f30, 0, trunkLen * 0.5, 0, woodKey);
   trunk.rotation.z = lean;
   g.add(trunk);
+  // spreading roots
+  const roots = 3 + ((branchN * 4) | 0);
+  for (let i = 0; i < roots; i++) {
+    const root = cyl(0.018, 0.01, 0.22 + rng() * 0.18, 5, 0x5a4028, 0, 0.02, 0);
+    root.rotation.z = Math.PI / 2.4;
+    root.rotation.y = (i / roots) * Math.PI * 2;
+    root.position.set(Math.cos(root.rotation.y) * 0.08, 0.02, Math.sin(root.rotation.y) * 0.08);
+    g.add(root);
+  }
+  const limbs = 1 + ((branchN * 3) | 0);
+  for (let i = 0; i < limbs; i++) {
+    const len = 0.28 + rng() * 0.34 * (0.5 + branchN);
+    const limb = cyl(trunkR * 0.45, 0.012, len, 5, 0x6b4f30, 0, trunkLen * (0.35 + rng() * 0.45), 0, woodKey);
+    limb.rotation.z = 0.7 + rng() * 0.5;
+    limb.rotation.y = (i / Math.max(1, limbs)) * Math.PI * 2 + rng() * 0.4;
+    g.add(limb);
+  }
   const grains = 3 + ((rng() * 5) | 0);
   for (let i = 0; i < grains; i++) {
     const band = cyl(trunkR * 1.02, trunkR * 1.02, 0.025, segs, i % 2 ? 0x5a4028 : 0x7a5c37, 0, 0.12 + i * (trunkLen / (grains + 1)), 0);
@@ -516,34 +778,23 @@ export function buildBuilding(type, civKey) {
   const g = new THREE.Group();
   switch (type) {
     case 'campfire': {
-      for (let i = 0; i < 8; i++) {
-        const a = (i / 8) * Math.PI * 2;
-        const st = sph(0.16 + (i % 3) * 0.04, 0x8a8578, Math.cos(a) * 0.85, 0.1, Math.sin(a) * 0.85, 5);
-        st.scale.y = 0.7;
-        g.add(st);
-      }
-      for (let i = 0; i < 6; i++) {
-        const log = cyl(0.07, 0.07, 0.95, 5, 0x6b4f30, 0, 0.14, 0);
-        log.rotation.z = Math.PI / 2.4;
-        log.rotation.y = (i / 6) * Math.PI * 2;
-        g.add(log);
-      }
-      const flame = cone(0.3, 0.85, 6, 0xff8c2e, 0, 0.55, 0);
-      flame.material = new THREE.MeshLambertMaterial({ color: 0xff8c2e, emissive: 0xdd5510 });
-      const flame2 = cone(0.17, 0.55, 6, 0xffd050, 0, 0.65, 0);
-      flame2.material = new THREE.MeshLambertMaterial({ color: 0xffd050, emissive: 0xcc9910 });
-      g.add(flame, flame2);
-      g.userData.flame = flame;
-      g.userData.flame2 = flame2;
-      const light = new THREE.PointLight(0xff9540, 8, 12);
-      light.position.y = 1.1;
-      g.add(light);
-      g.userData.light = light;
+      const fire = buildCampfireMesh();
+      while (fire.children.length) g.add(fire.children[0]);
+      Object.assign(g.userData, fire.userData);
       break;
     }
     case 'hut': {
       const hut = hutByCiv(civKey, civ);
       while (hut.children.length) g.add(hut.children[0]);
+      break;
+    }
+    case 'well': {
+      g.add(cyl(0.55, 0.62, 0.35, 12, 0x8a8578, 0, 0.16, 0));
+      g.add(cyl(0.38, 0.38, 0.08, 12, 0x2a4a55, 0, 0.28, 0));
+      g.add(box(0.08, 0.7, 0.08, 0x6b4f30, -0.42, 0.55, 0));
+      g.add(box(0.08, 0.7, 0.08, 0x6b4f30, 0.42, 0.55, 0));
+      g.add(box(0.95, 0.06, 0.08, 0x6b4f30, 0, 0.9, 0));
+      g.add(cyl(0.05, 0.05, 0.35, 8, 0x5d4a33, 0, 0.55, 0));
       break;
     }
     case 'farm': {

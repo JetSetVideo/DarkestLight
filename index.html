@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Darkest Light</title>
+<title>Ἀρχή</title>
 <link rel="stylesheet" href="style.css">
 <script type="importmap">
 { "imports": { "three": "./lib/three.module.js" } }
@@ -14,8 +14,8 @@
 <!-- ======================= MAIN MENU ======================= -->
 <div id="screen-menu" class="screen">
   <div class="menu-box">
-    <h1 class="title">DARKEST&nbsp;LIGHT</h1>
-    <p class="subtitle">a minimalist god game &mdash; spore &times; black &amp; white &times; godus</p>
+    <h1 class="title">Ἀρχή</h1>
+    <p class="subtitle">Arché &mdash; to begin · a god game</p>
     <div class="menu-buttons" id="menu-buttons">
       <button id="btn-story" class="mbtn">Story Mode</button>
       <button id="btn-battle" class="mbtn">Battle Mode</button>
@@ -25,6 +25,9 @@
     </div>
     <div id="civ-select" class="civ-select hidden">
       <p class="civ-label">Choose your civilization</p>
+      <label class="seed-row">Map seed
+        <input id="map-seed" type="text" placeholder="blank = a new world" autocomplete="off">
+      </label>
       <div id="civ-list" class="civ-list"></div>
       <button id="btn-civ-cancel" class="mbtn small">Cancel</button>
     </div>
@@ -96,10 +99,10 @@
 <div id="hud" class="hidden">
   <div id="hud-top">
     <div class="hud-group" id="hud-res">
-      <span class="hres" id="hud-food" title="Food">🍖 0</span>
-      <span class="hres" id="hud-wood" title="Wood">🪵 0</span>
-      <span class="hres" id="hud-rock" title="Rock">🪨 0</span>
-      <span class="hres" id="hud-metal" title="Metal">⚙️ 0</span>
+      <span class="hres clickable" id="hud-food" title="Click to urge the tribe toward food (8 ✦)">🍖 0</span>
+      <span class="hres clickable" id="hud-wood" title="Click to urge the tribe toward wood (8 ✦)">🪵 0</span>
+      <span class="hres clickable" id="hud-rock" title="Click to urge the tribe toward stone (8 ✦)">🪨 0</span>
+      <span class="hres clickable" id="hud-metal" title="Click to urge the tribe toward ore (8 ✦)">⚙️ 0</span>
       <span class="hres" id="hud-pop" title="Population">👥 0</span>
       <span class="hres" id="hud-dp" title="Divine Points">✦ 0</span>
     </div>
@@ -114,29 +117,36 @@
         <span id="hud-align" title="God alignment">Balanced</span>
       </div>
       <span id="hud-timer">20:00</span>
-      <div id="clock" title="Day &amp; night">
+      <div id="clock" title="Day, weather, season">
         <div id="clock-dial">
           <span id="clock-sun">☀️</span>
           <span id="clock-moon">🌙</span>
         </div>
+        <span id="clock-wx" title="Weather">☀️</span>
+        <span id="clock-day">1</span>
       </div>
-      <span id="hud-weather" title="Weather">☀️</span>
       <span id="hud-season">Spring · Day</span>
+      <span id="hud-stance" title="How the two peoples regard each other">Indifferent</span>
     </div>
     <div class="hud-group">
-      <span class="hres" id="hud-score">Score 0</span>
-      <button id="btn-tech" class="hbtn">Tech</button>
-      <button id="btn-ledger" class="hbtn" title="DNA &amp; ecosystem ledger">📒 Ledger</button>
-      <button id="btn-influence" class="hbtn" title="God / village / belief influence">◎ Influence</button>
-      <button id="btn-invoke" class="hbtn" title="Summon fauna (biome + faith + ✦)">🐾 Invoke</button>
+      <span class="hres" id="hud-score" title="Judgement — land, people, era, faith, quests">VP 0–0</span>
+      <button id="btn-tech" class="hbtn" title="Invest Divine Points into ages and crafts">Tech</button>
       <button id="btn-menu-ingame" class="hbtn">Menu</button>
     </div>
   </div>
+  <div id="hud-purpose" title="Raise a people. Prevail by love, wrath, or judgement.">
+    <span id="hud-goal">Be their god</span>
+    <span class="hp-sep">·</span>
+    <span id="hud-flock" title="Your flock vs the rival">Flock 0 vs 0</span>
+    <span id="hud-love-wrap"><span class="hp-sep">·</span><span id="hud-love" title="Rival devotion toward you — conversions when high">Love 0%</span></span>
+    <span class="hp-sep">·</span>
+    <span id="hud-quest">—</span>
+  </div>
   <div id="hud-tools">
-    <button class="tool selected" data-tool="hand" title="Hold 1s to lift · swipe to slap · circle to pet · throw with velocity">✋ Hand</button>
+    <button class="tool selected" data-tool="hand" title="Hold 1s to lift · hold on a lake for a water bowl · swipe to slap · circle to pet · drop an animal in the fire to cook">✋ Hand</button>
     <button class="tool" data-tool="spell" title="LMB draw or RMB miracle: ◯ rain · small ◯ heal · spiral storm · | lightning · ∿ fire · star meteor · long zigzag quake · RMB circle = shield">✨ Spell</button>
     <button class="tool" data-tool="invoke" title="Summon fauna suited to biome &amp; your race (costs ✦ + faith)">🐾 Invoke</button>
-    <button class="tool" data-tool="scoop" title="Scoop wood/food piles and drop at camp">🫧 Scoop</button>
+    <button class="tool" data-tool="scoop" title="Scoop wood/food or a freshwater bowl — drop at the hearth, on fields, or on people">🫧 Scoop</button>
     <button class="tool" data-tool="plant" title="Plant a tree (5 ✦) — drag to paint flora">🌱 Plant</button>
     <button class="tool" data-tool="dig" title="Lower terrain — dig rivers">⛏ Dig</button>
     <button class="tool" data-tool="raise" title="Raise terrain">⛰ Raise</button>

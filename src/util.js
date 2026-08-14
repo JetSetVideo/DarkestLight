@@ -75,7 +75,7 @@ export function makeFBM(seed, octaves = 4) {
 }
 
 // ---------------- Spell shape recognition ----------------
-// Output: 'circle' | 'circle_soft' | 'line' | 'zigzag' | 'spiral' | 'star' | null
+// Output: 'circle' | 'circle_soft' | 'circle_hold' | 'line' | 'zigzag' | 'zigzag_heavy' | 'spiral' | 'star' | null
 export function recognizeShape(pts) {
   if (pts.length < 6) return null;
   let len = 0;
@@ -126,8 +126,13 @@ export function recognizeShape(pts) {
   // Soft heal circle: small, smooth, closed (Healing Aura)
   if (endDist < rMean * 0.95 && rVar / rMean < 0.28 && rMean > 12 && rMean < 55 && len < 280)
     return 'circle_soft';
+  // Firm large closed circle → Shield (Lexicon circle_hold). Mid-size stays rain.
+  if (endDist < rMean * 0.85 && rVar / rMean < 0.22 && rMean > 70 && len > 400)
+    return 'circle_hold';
   // Full rain circle: larger closed loop
   if (endDist < rMean * 0.9 && rVar / rMean < 0.35 && rMean > 25) return 'circle';
+  // Long jagged stroke → Earthquake (Lexicon zigzag_heavy). Shorter zigzags stay fire.
+  if (turns >= 5 && len > 420) return 'zigzag_heavy';
   if (turns >= 3) return 'zigzag';
   if (endDist / len > 0.82) return 'line';
   return null;

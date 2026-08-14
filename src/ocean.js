@@ -4,29 +4,31 @@ import * as THREE from 'three';
 
 // Two swells, one mid chop, one cross chop; high-frequency detail is a
 // fragment-space normal perturbation so the vertex grid stays coarse.
-const WAVES = [
-  { dx: 1.0, dz: 0.25, amp: 0.42, len: 34, steep: 0.32 },
-  { dx: 0.62, dz: 0.78, amp: 0.3, len: 22, steep: 0.3 },
-  { dx: -0.45, dz: 0.89, amp: 0.14, len: 9.5, steep: 0.25 },
-  { dx: 0.83, dz: -0.55, amp: 0.11, len: 6.5, steep: 0.22 },
-];
 
-export function createOcean({ heights, gridV, worldSize }) {
-  const size = worldSize * 2.6;
-  const geo = new THREE.PlaneGeometry(size, size, 200, 200);
+export function createOcean({ heights, fresh, gridV, worldSize }) {
+  const size = worldSize * 1.22;
+  const geo = new THREE.PlaneGeometry(size, size, 160, 160);
   geo.rotateX(-Math.PI / 2);
 
-  const tex = new THREE.DataTexture(
-    new Float32Array(gridV * gridV), gridV, gridV, THREE.RedFormat, THREE.FloatType,
-  );
-  tex.magFilter = THREE.LinearFilter;
-  tex.minFilter = THREE.LinearFilter;
-  tex.wrapS = THREE.ClampToEdgeWrapping;
-  tex.wrapT = THREE.ClampToEdgeWrapping;
+  const makeTex = (src) => {
+    const tex = new THREE.DataTexture(
+      new Float32Array(gridV * gridV), gridV, gridV, THREE.RedFormat, THREE.FloatType,
+    );
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearFilter;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    if (src) tex.image.data.set(src);
+    tex.needsUpdate = true;
+    return tex;
+  };
+  const heightTex = makeTex(heights);
+  const freshTex = makeTex(fresh);
 
   const uniforms = {
     uTime: { value: 0 },
-    uTerrain: { value: tex },
+    uTerrain: { value: heightTex },
+    uFresh: { value: freshTex },
     uWorldSize: { value: worldSize },
     uSunDir: { value: new THREE.Vector3(0.4, 0.85, 0.3).normalize() },
     uDayAmt: { value: 1 },
@@ -34,66 +36,84 @@ export function createOcean({ heights, gridV, worldSize }) {
     uSkyColor: { value: new THREE.Color(0x87b8e8) },
     uFogNear: { value: 90 },
     uFogFar: { value: 260 },
+    uWaveAmp: { value: 0.18 },
+    uStorm: { value: 0 },
+    uDeep: { value: new THREE.Color(0x1e3a5f) },
+    uMid: { value: new THREE.Color(0x4a90d9) },
+    uLight: { value: new THREE.Color(0xa8d8ea) },
   };
 
   const setHeights = (h) => {
-    tex.image.data.set(h);
-    tex.needsUpdate = true;
+    heightTex.image.data.set(h);
+    heightTex.needsUpdate = true;
   };
-  setHeights(heights);
+  const setFresh = (f) => {
+    if (!f) return;
+    freshTex.image.data.set(f);
+    freshTex.needsUpdate = true;
+  };
 
   const mat = new THREE.ShaderMaterial({
     uniforms,
-    vertexShader: buildOceanVertex(),
+    vertexShader: OCEAN_VERT,
     fragmentShader: OCEAN_FRAG,
   });
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = 'ocean';
   mesh.frustumCulled = false;
-  return { mesh, uniforms, setHeights };
+  return { mesh, uniforms, setHeights, setFresh };
 }
 
-function buildOceanVertex() {
-  let sum = '';
-  let totalAmp = 0;
-  for (const w of WAVES) {
-    const l = Math.hypot(w.dx, w.dz);
-    const dx = (w.dx / l).toFixed(5), dz = (w.dz / l).toFixed(5);
-    const k = ((2 * Math.PI) / w.len).toFixed(6);
-    const om = Math.sqrt(9.8 * (2 * Math.PI) / w.len).toFixed(6);
-    const a = w.amp.toFixed(4), q = w.steep.toFixed(4);
-    totalAmp += w.amp;
-    sum += `
-    {
-      vec2 D = vec2(${dx}, ${dz});
-      float f = ${k} * dot(D, p0) - ${om} * uTime;
-      float s = sin(f); float c = cos(f);
-      pos.x += ${q} * ${a} * D.x * c;
-      pos.z += ${q} * ${a} * D.y * c;
-      pos.y += ${a} * s;
-      nrm.x -= D.x * ${k} * ${a} * c;
-      nrm.z -= D.y * ${k} * ${a} * c;
-      nrm.y -= ${q} * ${k} * ${a} * s;
-    }`;
-  }
-  return `
+const OCEAN_VERT = `
   uniform float uTime;
+  uniform float uWaveAmp;
+  uniform float uStorm;
+  uniform sampler2D uFresh;
+  uniform float uWorldSize;
   varying vec3 vWorldPos;
   varying vec3 vNormal;
   varying float vCrest;
+  varying float vFresh;
   void main() {
     vec3 base = (modelMatrix * vec4(position, 1.0)).xyz;
     vec2 p0 = base.xz;
+    vec2 mapUv = p0 / uWorldSize + 0.5;
+    float inland = 0.0;
+    if (mapUv.x > 0.0 && mapUv.x < 1.0 && mapUv.y > 0.0 && mapUv.y < 1.0)
+      inland = texture2D(uFresh, mapUv).r;
+    vFresh = inland;
+    float calm = mix(1.0, 0.06, clamp(inland * 1.4, 0.0, 1.0));
+    float amp = uWaveAmp * calm;
+    vec2 toCenter = -normalize(p0 + vec2(0.17, 0.11));
     vec3 pos = base;
     vec3 nrm = vec3(0.0, 1.0, 0.0);
-    ${sum}
+    float crest = 0.0;
+    // Inward chaotic swells — direction leans toward the island heart.
+    for (int i = 0; i < 4; i++) {
+      float fi = float(i);
+      vec2 D = normalize(toCenter + vec2(sin(fi * 2.17 + p0.x * 0.02), cos(fi * 1.63 + p0.y * 0.018)) * (0.35 + fi * 0.12));
+      float len = 28.0 - fi * 5.5;
+      float k = 6.28318 / len;
+      float om = sqrt(9.8 * k);
+      float a = amp * (0.42 - fi * 0.07) * (1.0 + uStorm * 0.85);
+      float q = 0.28 + uStorm * 0.12;
+      float f = k * dot(D, p0) - om * uTime * (0.85 + fi * 0.08);
+      float s = sin(f); float c = cos(f);
+      pos.x += q * a * D.x * c;
+      pos.z += q * a * D.y * c;
+      pos.y += a * s;
+      nrm.x -= D.x * k * a * c;
+      nrm.z -= D.y * k * a * c;
+      nrm.y -= q * k * a * s;
+      crest += s * a;
+    }
     vWorldPos = pos;
     vNormal = normalize(nrm);
-    vCrest = clamp((pos.y - base.y) / ${(totalAmp * 2).toFixed(4)} + 0.5, 0.0, 1.0);
+    vCrest = clamp(crest / max(amp * 1.6, 0.05) + 0.5, 0.0, 1.0);
     gl_Position = projectionMatrix * viewMatrix * vec4(pos, 1.0);
-  }`;
-}
+  }
+`;
 
 const OCEAN_FRAG = `
 precision highp float;
@@ -106,13 +126,15 @@ uniform float uSunVis;
 uniform vec3 uSkyColor;
 uniform float uFogNear;
 uniform float uFogFar;
+uniform vec3 uDeep;
+uniform vec3 uMid;
+uniform vec3 uLight;
+uniform float uStorm;
 varying vec3 vWorldPos;
 varying vec3 vNormal;
 varying float vCrest;
+varying float vFresh;
 
-const vec3 DEEP  = vec3(0.118, 0.227, 0.373);
-const vec3 MID   = vec3(0.290, 0.565, 0.851);
-const vec3 LIGHT = vec3(0.659, 0.847, 0.918);
 const vec3 FOAM  = vec3(0.96, 0.985, 1.0);
 
 float hash21(vec2 p) {
@@ -140,13 +162,17 @@ void main() {
   float n0 = vnoise(dp);
   float nx = vnoise(dp + vec2(0.35, 0.0)) - n0;
   float nz = vnoise(dp + vec2(0.0, 0.35)) - n0;
-  vec3 n = normalize(vNormal + vec3(-nx, 0.0, -nz) * 0.85);
+  vec3 n = normalize(vNormal + vec3(-nx, 0.0, -nz) * 0.85 * (1.0 - vFresh * 0.9));
+
+  vec3 DEEP = uDeep;
+  vec3 MID = uMid;
+  vec3 LIGHT = mix(uLight, vec3(0.45, 0.72, 0.68), vFresh);
 
   // 3-band base color by depth + crest band, hard steps.
   vec3 col = DEEP;
   col = mix(col, MID, step(depth, 3.4));
   col = mix(col, LIGHT, step(depth, 1.1));
-  col = mix(col, mix(col, LIGHT, 0.6), step(0.74, vCrest));
+  col = mix(col, mix(col, LIGHT, 0.6), step(0.74, vCrest) * (1.0 - vFresh));
 
   // Quantized cel diffuse (3 steps).
   float diff = max(dot(n, uSunDir), 0.0);
@@ -165,11 +191,11 @@ void main() {
   float foamNoise = vnoise(vWorldPos.xz * 1.5 + vec2(uTime * 0.35, uTime * 0.22));
   float ring1 = step(depth, 0.34 + foamNoise * 0.26);
   float ring2 = step(abs(depth - (0.85 + 0.3 * sin(uTime * 1.3 + foamNoise * 6.2831))), 0.11);
-  float foam = clamp(ring1 + ring2 * 0.7, 0.0, 1.0) * inside;
+  float foam = clamp(ring1 + ring2 * 0.7, 0.0, 1.0) * inside * (1.0 - vFresh * 0.88);
   col = mix(col, FOAM, foam);
 
   // Open-water crest flecks.
-  col = mix(col, FOAM, step(0.88, vCrest) * step(0.55, foamNoise) * 0.8);
+  col = mix(col, FOAM, step(0.88, vCrest) * step(0.55, foamNoise) * (0.35 + uStorm * 0.65) * (1.0 - vFresh));
 
   // Day/night: dim and pull toward the sky tint at night.
   float dayLight = clamp(uDayAmt, 0.0, 1.0);

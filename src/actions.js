@@ -22,6 +22,10 @@ export const STATUS_ICONS = {
   eat:     { glyph: '🍖', color: '#d7263d', bob: true,  fade: false },
   chat:    { glyph: '…', color: '#e8e4d8', bob: true,  fade: true },
   shaman:  { glyph: '✦', color: '#37c8ab', bob: true,  fade: false },
+  tame:    { glyph: '🐾', color: '#c9a06a', bob: false, fade: false },
+  work:    { glyph: '⚒', color: '#d9c66a', bob: false, fade: false },
+  drown:   { glyph: '💧', color: '#6aa7c8', bob: true,  fade: true },
+  companion:{ glyph: '♡', color: '#e8a9c9', bob: true,  fade: false },
 };
 
 /**
@@ -86,6 +90,31 @@ export const ACTIONS = [
   { id: 'spell_bolt',  actor: ['god'],             target: 'ground',     needs: ['dp','faith'], result: 'smite line', icon: null },
   { id: 'spell_fire',  actor: ['god'],             target: 'ground',     needs: ['dp','faith'], result: 'blast', icon: null },
   { id: 'terraform',   actor: ['god'],             target: 'ground',     needs: ['dp'],       result: 'raise/lower', icon: null },
+  { id: 'tame',        actor: ['gather','hunter','shaman'], target: 'animal', needs: ['willpower'], result: 'companion', icon: 'tame' },
+  { id: 'scoop_deposit',actor: ['god'],            target: 'campfire',   needs: ['scoop'],    result: 'stockpile wood/food/water', icon: 'deposit' },
+  { id: 'invoke',      actor: ['god'],             target: 'ground',     needs: ['dp','faith'], result: 'summon fauna', icon: 'tame' },
+  { id: 'heal_aura',   actor: ['god'],             target: 'kin',        needs: ['dp','faith'], result: 'heal + clear panic', icon: null },
+  { id: 'work',        actor: ['gather','farmer','gatherer'], target: 'site', needs: ['schedule'], result: 'scheduled labor', icon: 'work' },
+  { id: 'pave',        actor: ['gather','farmer'], target: 'road',       needs: ['era'],      result: 'pave path', icon: 'work' },
+];
+
+/** God drop-next-to interactions: place a follower beside something. */
+export const DROP_INTERACT = [
+  { id: 'tree_wood',   near: 'tree',      task: 'harvest', note: 'Chop wood' },
+  { id: 'tree_fruit',  near: 'bush',      task: 'harvest', note: 'Pick fruit' },
+  { id: 'rock_mine',   near: 'rock',      task: 'harvest', note: 'Gather stone' },
+  { id: 'ore_mine',    near: 'metal',     task: 'harvest', note: 'Dig ore' },
+  { id: 'shore_fish',  near: 'fresh',     task: 'fish',    note: 'Fish the shallows' },
+  { id: 'shore_water', near: 'fresh',     task: 'water',   note: 'Fetch drinking water' },
+  { id: 'hearth',      near: 'campfire',  task: 'deposit', note: 'Offer what they carry' },
+  { id: 'well',        near: 'well',      task: 'water',   note: 'Draw water' },
+  { id: 'farm',        near: 'farm',      task: 'work',    note: 'Tend the field' },
+  { id: 'build_site',  near: 'construct', task: 'build',   note: 'Join the builders' },
+  { id: 'hunt',        near: 'animal',    task: 'hunt',    note: 'Hunt the beast' },
+  { id: 'tame',        near: 'animal',    task: 'tame',    note: 'Try to tame' },
+  { id: 'attack',      near: 'enemy',     task: 'attack',  note: 'Strike' },
+  { id: 'social',      near: 'kin',       task: 'wander',  note: 'Stand with kin' },
+  { id: 'stick',       near: 'holdable',  task: 'pickup',  note: 'Pick up wood' },
 ];
 
 /** Map a creature's current task → status icon key. */
@@ -98,7 +127,13 @@ export function iconForTask(task, extra = {}) {
   if (task === 'harvest' && extra.yields === 'wood') return 'chop';
   if (task === 'harvest' && (extra.yields === 'rock' || extra.yields === 'metal')) return 'mine';
   if (task === 'fish') return 'fish';
+  if (task === 'water') return 'fish';
   if (task === 'build') return 'build';
+  if (task === 'level') return 'build';
+  if (task === 'work' || task === 'pave') return 'work';
+  if (task === 'tame') return 'tame';
+  if (extra.drowning || task === 'drown') return 'drown';
+  if (extra.companion) return 'companion';
   if (task === 'pray') return 'pray';
   if (task === 'ponder' || task === 'think') return 'think';
   if (task === 'deposit') return 'deposit';

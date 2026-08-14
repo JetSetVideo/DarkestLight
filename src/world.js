@@ -1,17 +1,17 @@
-// World: climate-driven polygonal island (square/hexagon/octagon/round).
+// World: climate-driven polygonal island (hexagon/octagon/round/disk/cycle).
 // Pipeline: adversarial macro relief → altitude (sea = 0) → temperature &
 // humidity → biome frames → geological deposits → erosion → light terracing →
 // ground shaders (grass / sand waves) + matching socle pedestal under the map.
 // Also: tides, path wear, day/night + moon, weather machine, fog of war.
 import * as THREE from 'three';
-import { makeFBM, clamp, lerp, pick } from './util.js';
+import { makeFBM, clamp, lerp, pick, mulberry32 } from './util.js';
 import { createOcean, createSkyDome } from './ocean.js';
 import { pickWeatherBiased } from './engine/alignment.js';
 
 export const WORLD_SIZE = 160;
-export const SEG = 192;
+export const SEG = 208;
 export const WATER_Y = 0; // sea level = altitude 0
-export const MAP_SHAPES = { square: 4, hexagon: 6, octagon: 8, round: 24 };
+export const MAP_SHAPES = { hexagon: 6, octagon: 8, round: 24, disk: 36, cycle: 48 };
 
 /** Surface terracing only — deep useless layers replaced by the socle. */
 const SURFACE_LAYERS = 4;
@@ -30,113 +30,167 @@ export const BIOMES = {
     alt: [0, 14], hum: [0.0, 0.25], temp: [0.0, 0.22],
     deposits: { sand: 0.15, gravel: 0.55, limestone: 0.1, peat: 0, ash: 0 },
     color: 0xdde6ef, pattern: 'ice',
+    climate: { hot: false, cold: true, wet: false, dry: true, high: false, volcanic: false },
   },
   tundra: {
     id: 1, name: 'Tundra',
     alt: [0, 6], hum: [0.15, 0.45], temp: [0.08, 0.32],
     deposits: { peat: 0.35, silt: 0.4, gravel: 0.25, clay: 0.15 },
     color: 0x8a9a7a, pattern: 'moss',
+    climate: { hot: false, cold: true, wet: false, dry: false, high: false, volcanic: false },
   },
   boreal: {
     id: 2, name: 'Boreal forest',
     alt: [0.5, 8], hum: [0.35, 0.7], temp: [0.18, 0.42],
     deposits: { loam: 0.55, peat: 0.25, clay: 0.2, silt: 0.2 },
     color: 0x3d6b45, pattern: 'grass',
+    climate: { hot: false, cold: true, wet: true, dry: false, high: false, volcanic: false },
   },
   temperate_forest: {
     id: 3, name: 'Temperate forest',
     alt: [0.4, 7], hum: [0.4, 0.75], temp: [0.35, 0.62],
     deposits: { loam: 0.7, clay: 0.25, silt: 0.2 },
     color: 0x4f8f3e, pattern: 'grass',
+    climate: { hot: false, cold: false, wet: true, dry: false, high: false, volcanic: false },
   },
   tropical_forest: {
     id: 4, name: 'Tropical forest',
     alt: [0.3, 6], hum: [0.65, 1.0], temp: [0.7, 1.0],
     deposits: { loam: 0.5, clay: 0.45, silt: 0.3, peat: 0.15 },
     color: 0x2f7a3a, pattern: 'grass',
+    climate: { hot: true, cold: false, wet: true, dry: false, high: false, volcanic: false },
   },
   swamp: {
     id: 5, name: 'Swamp',
     alt: [-0.5, 2.2], hum: [0.7, 1.0], temp: [0.4, 0.85],
     deposits: { peat: 0.7, clay: 0.5, silt: 0.55, sand: 0.1 },
     color: 0x3a6b48, pattern: 'moss',
+    climate: { hot: false, cold: false, wet: true, dry: false, high: false, volcanic: false },
   },
   mangrove: {
     id: 6, name: 'Mangrove',
     alt: [-0.3, 1.5], hum: [0.75, 1.0], temp: [0.65, 1.0],
     deposits: { silt: 0.65, clay: 0.4, sand: 0.25, peat: 0.3 },
     color: 0x3f7055, pattern: 'moss',
+    climate: { hot: true, cold: false, wet: true, dry: false, high: false, volcanic: false },
   },
   desert: {
     id: 7, name: 'Desert',
     alt: [0.2, 8], hum: [0.0, 0.22], temp: [0.65, 1.0],
     deposits: { sand: 0.9, gravel: 0.25, limestone: 0.2, clay: 0.1 },
     color: 0xd8c68a, pattern: 'sand',
+    climate: { hot: true, cold: false, wet: false, dry: true, high: false, volcanic: false },
   },
   ice_cap: {
     id: 8, name: 'Ice cap / snowfields',
     alt: [8, 16], hum: [0.0, 0.5], temp: [0.0, 0.28],
     deposits: { gravel: 0.4, limestone: 0.15, sand: 0.05 },
     color: 0xe8e8ee, pattern: 'ice',
+    climate: { hot: false, cold: true, wet: false, dry: true, high: true, volcanic: false },
   },
   plains: {
     id: 9, name: 'Plains',
     alt: [0.4, 4.5], hum: [0.25, 0.55], temp: [0.4, 0.75],
     deposits: { loam: 0.65, silt: 0.35, clay: 0.2, sand: 0.15 },
     color: 0x9aa04e, pattern: 'grass',
+    climate: { hot: false, cold: false, wet: false, dry: false, high: false, volcanic: false },
   },
   savanna: {
     id: 10, name: 'Savanna',
     alt: [0.5, 5], hum: [0.18, 0.42], temp: [0.6, 0.95],
     deposits: { loam: 0.4, sand: 0.35, clay: 0.25, silt: 0.2 },
     color: 0xb3a06a, pattern: 'grass',
+    climate: { hot: true, cold: false, wet: false, dry: true, high: false, volcanic: false },
   },
   chaparral: {
     id: 11, name: 'Chaparral / scrub',
     alt: [0.5, 6], hum: [0.2, 0.4], temp: [0.5, 0.8],
     deposits: { clay: 0.35, gravel: 0.3, loam: 0.3, limestone: 0.25 },
     color: 0xa89858, pattern: 'grass',
+    climate: { hot: true, cold: false, wet: false, dry: true, high: false, volcanic: false },
   },
   hills: {
     id: 12, name: 'Hills',
     alt: [2.5, 7.5], hum: [0.25, 0.65], temp: [0.3, 0.7],
     deposits: { loam: 0.4, gravel: 0.45, limestone: 0.3, clay: 0.2 },
     color: 0x6a9a4a, pattern: 'grass',
+    climate: { hot: false, cold: false, wet: false, dry: false, high: true, volcanic: false },
   },
   high_mountains: {
     id: 13, name: 'High mountains',
     alt: [6.5, 16], hum: [0.1, 0.55], temp: [0.0, 0.4],
     deposits: { gravel: 0.7, limestone: 0.45, basalt: 0.2, sand: 0.05 },
     color: 0x8d8a80, pattern: 'rock',
+    climate: { hot: false, cold: true, wet: false, dry: false, high: true, volcanic: false },
   },
   alpine_meadow: {
     id: 14, name: 'Alpine meadow',
     alt: [5, 9], hum: [0.35, 0.7], temp: [0.15, 0.4],
     deposits: { loam: 0.45, silt: 0.3, gravel: 0.35, peat: 0.1 },
     color: 0x7aab6a, pattern: 'grass',
+    climate: { hot: false, cold: true, wet: false, dry: false, high: true, volcanic: false },
   },
   volcano: {
     id: 15, name: 'Volcano',
     alt: [3, 16], hum: [0.05, 0.45], temp: [0.55, 1.0],
     deposits: { basalt: 0.85, ash: 0.75, gravel: 0.4, sand: 0.15 },
     color: 0x4a4038, pattern: 'rock',
+    climate: { hot: true, cold: false, wet: false, dry: true, high: true, volcanic: true },
   },
   shore: {
     id: 16, name: 'Shore / beach',
     alt: [-0.2, 1.2], hum: [0.3, 0.9], temp: [0.25, 0.95],
     deposits: { sand: 0.85, silt: 0.3, clay: 0.15, gravel: 0.2 },
     color: 0xc4b183, pattern: 'sand',
+    climate: { hot: false, cold: false, wet: true, dry: false, high: false, volcanic: false },
   },
   seabed: {
     id: 17, name: 'Seabed',
     alt: [-8, -0.15], hum: [0.8, 1.0], temp: [0.2, 0.8],
     deposits: { silt: 0.6, sand: 0.4, clay: 0.35, limestone: 0.15 },
     color: 0x3b5b46, pattern: 'none',
+    climate: { hot: false, cold: false, wet: true, dry: false, high: false, volcanic: false },
   },
 };
 
 export const BIOME_KEYS = Object.keys(BIOMES);
-const BIOME_BY_ID = BIOME_KEYS.map(k => BIOMES[k]);
+export const BIOME_BY_ID = BIOME_KEYS.map(k => BIOMES[k]);
+
+const EMPTY_CLIMATE = { hot: false, cold: false, wet: false, dry: false, high: false, volcanic: false };
+
+/** Climate flags for a biome id (never returns undefined). */
+export function biomeFlags(id) {
+  return BIOME_BY_ID[id]?.climate || EMPTY_CLIMATE;
+}
+
+/** Sample climate + deposits at a world point for gameplay consumers. */
+export function cellContext(terrain, x, z, extra = {}) {
+  const k = terrain.idx(x, z);
+  const bio = terrain.biome[k] ?? 9;
+  const flags = biomeFlags(bio);
+  return {
+    x, z,
+    alt: terrain.heights[k] ?? 0,
+    hum: terrain.humidity[k] ?? 0.5,
+    temp: terrain.temperature[k] ?? 0.5,
+    bio,
+    flags,
+    fert: extra.fert ?? (terrain.ecology?.fertilityAt?.(x, z) ?? terrain.humidity[k] ?? 0.5),
+    wind: extra.wind ?? 0,
+    align: extra.align ?? 0,
+    volcanic: terrain.volcanic[k] ?? 0,
+    loam: terrain.loam?.[k] ?? 0,
+    silt: terrain.silt?.[k] ?? 0,
+    peat: terrain.peat?.[k] ?? 0,
+    gravel: terrain.gravel?.[k] ?? 0,
+    basalt: terrain.basalt?.[k] ?? 0,
+    limestone: terrain.limestone?.[k] ?? 0,
+    sand: terrain.sand?.[k] ?? 0,
+    clay: terrain.clay?.[k] ?? 0,
+    ash: terrain.ash?.[k] ?? 0,
+    rock: terrain.rock?.[k] ?? 0,
+  };
+}
 
 function scoreBiome(key, alt, hum, temp) {
   const b = BIOMES[key];
@@ -229,10 +283,11 @@ void main() {
 
 // ============================ TERRAIN ============================
 export class Terrain {
-  constructor(scene, seed, shapeName) {
+  constructor(scene, seed, shapeName, opts = {}) {
     this.scene = scene;
     this.seed = seed >>> 0;
     this.shapeName = shapeName || pick(Math.random, Object.keys(MAP_SHAPES));
+    this.pvp = !!opts.pvp;
     this.heights = new Float32Array(V * V);      // altitude; sea = 0
     this.humidity = new Float32Array(V * V);     // 0..1
     this.temperature = new Float32Array(V * V);  // 0..1 cold→hot
@@ -253,6 +308,8 @@ export class Terrain {
     this.wear = new Float32Array(V * V);
     this.dirt = new Float32Array(V * V);
     this.leveled = new Float32Array(V * V);
+    this.fresh = new Float32Array(V * V);
+    this.lakes = [];
     this.fogEnabled = true;
     this.seasonTint = { snow: 0, autumn: 0 };
     this._colDirty = true;
@@ -314,13 +371,24 @@ export class Terrain {
         alt += Math.pow(ridge, 1.55) * 4.5;                 // ridges push up
         alt -= Math.pow(valley, 2.0) * 2.8 * (1 - ridge * 0.35); // valleys cut, weakly
 
-        // Island falloff (closed landmass)
-        alt -= Math.pow(Math.max(0, d - 0.68) * 3.4, 2) * 10;
+        // Island falloff — landmass stays close to the polygon edge (≥ ~half the square).
+        alt -= Math.pow(Math.max(0, d - 0.88) * 4.2, 2) * 11;
 
-        // River carved as valley adversary along a sine corridor
-        const riverX = Math.sin(z * 0.055) * 10 + (fbm(z * 0.02, 2.2) - 0.5) * 4;
-        const rd = Math.abs(x - riverX);
-        if (rd < 7) alt = Math.min(alt, lerp(-2.4, alt, Math.pow(rd / 7, 1.6)));
+        // Battle maps keep a fair river corridor between the two camps.
+        // Sandbox / story islands skip that symmetry and keep organic valleys.
+        let rd = 99;
+        if (this.pvp) {
+          const riverX = Math.sin(z * 0.055) * 10 + (fbm(z * 0.02, 2.2) - 0.5) * 4;
+          rd = Math.abs(x - riverX);
+          if (rd < 7) alt = Math.min(alt, lerp(-2.4, alt, Math.pow(rd / 7, 1.6)));
+        }
+
+        // Little clips / ledges units walk around (later: stairs, elevators).
+        const clipN = fbmRid(i * 0.16 + 3.1, j * 0.16);
+        if (clipN > 0.56 && alt > WATER_Y + 0.2) {
+          const step = 1.25 + (clipN - 0.56) * 3.4;
+          alt = Math.floor(alt / step) * step + (clipN - 0.56) * 0.15;
+        }
 
         // Volcanic cone adversary (local radial uplift + ash later)
         const vDist = Math.hypot(x - volX, z - volZ);
@@ -378,6 +446,81 @@ export class Terrain {
     this.erode(4);
     this.hydraulicPass(2);
     this.terrace();
+    this.carveLakes(seed);
+    this._markInlandFresh();
+  }
+
+  /** Rivers, lakes and inland basins are drinkable; the outer sea is salt. */
+  _markInlandFresh() {
+    const sides = this._sides || 8;
+    const rot = this._rot || 0;
+    for (let j = 0; j < V; j++) {
+      for (let i = 0; i < V; i++) {
+        const k = j * V + i;
+        if (this.heights[k] >= WATER_Y - 0.05) continue;
+        const x = (i / SEG - 0.5) * WORLD_SIZE;
+        const z = (j / SEG - 0.5) * WORLD_SIZE;
+        const d = this._polyDist(x, z, sides, rot);
+        if (d < 0.82 || this.fresh[k] > 0.3) this.fresh[k] = Math.max(this.fresh[k], 1);
+      }
+    }
+  }
+
+  markFreshDisk(x, z, radius) {
+    const iC = (x / WORLD_SIZE + 0.5) * SEG;
+    const jC = (z / WORLD_SIZE + 0.5) * SEG;
+    const r = radius / (WORLD_SIZE / SEG);
+    for (let j = Math.max(0, Math.floor(jC - r)); j <= Math.min(SEG, Math.ceil(jC + r)); j++) {
+      for (let i = Math.max(0, Math.floor(iC - r)); i <= Math.min(SEG, Math.ceil(iC + r)); i++) {
+        if (Math.hypot(i - iC, j - jC) > r) continue;
+        this.fresh[j * V + i] = 1;
+      }
+    }
+  }
+
+  /**
+   * Inland freshwater basins. The ocean is salt; these pools are drinkable
+   * and the sites where a tribe can later sink a well.
+   */
+  carveLakes(seed) {
+    this.fresh = this.fresh || new Float32Array(V * V);
+    this.lakes = [];
+    const rng = mulberry32((seed + 9091) >>> 0);
+    const want = this.pvp ? 2 : 2 + ((rng() * 2) | 0);
+    for (let n = 0; n < want; n++) {
+      let cx = 0, cz = 0, ok = false;
+      for (let t = 0; t < 90; t++) {
+        cx = (rng() - 0.45) * WORLD_SIZE * 0.52;
+        cz = (rng() - 0.5) * WORLD_SIZE * 0.52;
+        if (this.pvp && n === 0 && cx > -10) continue;
+        if (this.pvp && n === 1 && cx < 10) continue;
+        const h = this.getHeight(cx, cz);
+        if (h > WATER_Y + 1.1 && h < 5.2) { ok = true; break; }
+      }
+      if (!ok) continue;
+      const radius = 4.2 + rng() * 3.8;
+      this._depressLake(cx, cz, radius, WATER_Y - 0.65);
+      this.lakes.push({ x: cx, z: cz, r: radius });
+    }
+  }
+
+  _depressLake(cx, cz, radius, floor) {
+    const iC = (cx / WORLD_SIZE + 0.5) * SEG;
+    const jC = (cz / WORLD_SIZE + 0.5) * SEG;
+    const r = radius / (WORLD_SIZE / SEG);
+    for (let j = Math.max(0, Math.floor(jC - r)); j <= Math.min(SEG, Math.ceil(jC + r)); j++) {
+      for (let i = Math.max(0, Math.floor(iC - r)); i <= Math.min(SEG, Math.ceil(iC + r)); i++) {
+        const d = Math.hypot(i - iC, j - jC) / r;
+        if (d > 1) continue;
+        const k = j * V + i;
+        const bowl = (1 - d * d) * (this.heights[k] - floor + 0.4);
+        this.heights[k] = Math.min(this.heights[k], this.heights[k] - bowl * 0.92);
+        if (this.heights[k] < WATER_Y + 0.05) {
+          this.fresh[k] = 1;
+          this.humidity[k] = Math.min(1, this.humidity[k] + 0.35);
+        }
+      }
+    }
   }
 
   /**
@@ -526,10 +669,11 @@ export class Terrain {
     scene.add(this.mesh);
 
     // Water — Gerstner cel ocean (waves, shore foam, sparkles; see ocean.js)
-    const ocean = createOcean({ heights: this.heights, gridV: V, worldSize: WORLD_SIZE });
+    const ocean = createOcean({ heights: this.heights, fresh: this.fresh, gridV: V, worldSize: WORLD_SIZE });
     this.water = ocean.mesh;
     this.oceanUniforms = ocean.uniforms;
     this._oceanSetHeights = ocean.setHeights;
+    this._oceanSetFresh = ocean.setFresh;
     this.water.position.y = WATER_Y;
     scene.add(this.water);
 
@@ -641,6 +785,17 @@ export class Terrain {
 
   isWater(x, z) { return this.getHeight(x, z) < WATER_Y - 0.15; }
 
+  /** Drinkable inland water (lakes / well sites). The sea is salt. */
+  isFresh(x, z) {
+    if (!this.isWater(x, z)) return false;
+    return (this.fresh?.[this.idx(x, z)] || 0) > 0.35;
+  }
+
+  /** Steep clip a walker should go around rather than climb. */
+  isCliff(x, z, look = 1.15) {
+    return this.maxSlope(x, z, look) > 1.05;
+  }
+
   isShaft(x, z, radius = 2.5) {
     const center = this.getHeight(x, z);
     if (center < WATER_Y + 0.2) return false;
@@ -739,14 +894,25 @@ export class Terrain {
     for (let k = 0; k < this.fog.length; k++) if (this.fog[k] > 0.56) this.fog[k] = 0.55;
   }
 
-  revealFog(x, z, radius) {
+  revealFog(x, z, radius, facing = 0, fov = Math.PI * 0.85) {
     if (!this.fogEnabled) return;
     const iC = (x / WORLD_SIZE + 0.5) * SEG;
     const jC = (z / WORLD_SIZE + 0.5) * SEG;
     const r = radius / (WORLD_SIZE / SEG);
+    const half = fov * 0.5;
     for (let j = Math.max(0, Math.floor(jC - r)); j <= Math.min(SEG, Math.ceil(jC + r)); j++) {
       for (let i = Math.max(0, Math.floor(iC - r)); i <= Math.min(SEG, Math.ceil(iC + r)); i++) {
-        if (Math.hypot(i - iC, j - jC) <= r) this.fog[j * V + i] = 1;
+        const dx = i - iC, dz = j - jC;
+        const dist = Math.hypot(dx, dz);
+        if (dist > r) continue;
+        if (dist < r * 0.22) { this.fog[j * V + i] = 1; continue; }
+        const ang = Math.atan2(dx, dz) - facing;
+        let a = ang;
+        while (a > Math.PI) a -= Math.PI * 2;
+        while (a < -Math.PI) a += Math.PI * 2;
+        const behind = Math.abs(a) > half;
+        const reach = behind ? r * 0.28 : r;
+        if (dist <= reach) this.fog[j * V + i] = 1;
       }
     }
     this._colDirty = true;
@@ -781,9 +947,12 @@ export class Terrain {
       if (this.limestone[k] > 0.55 && h > 2) c.lerp(new THREE.Color(0xc4bca8), this.limestone[k] * 0.4);
       if (this.gravel[k] > 0.6) c.lerp(new THREE.Color(0x9a9484), 0.35);
 
-      // Shore / seabed absolute bands
-      if (h < WATER_Y - 0.4) c.setHex(0x3b5b46);
-      else if (h < WATER_Y + 0.35) c.lerp(new THREE.Color(0xc4b183), 0.85);
+      // Shore / seabed absolute bands — freshwater lakes stay clearer/greener
+      if (h < WATER_Y - 0.4) c.setHex(this.fresh[k] > 0.35 ? 0x2d6b5c : 0x3b5b46);
+      else if (h < WATER_Y + 0.35) {
+        if (this.fresh[k] > 0.35) c.lerp(new THREE.Color(0x4a9a7a), 0.7);
+        else c.lerp(new THREE.Color(0xc4b183), 0.85);
+      }
 
       if (autumn > 0 && (bio.pattern === 'grass' || bio.pattern === 'moss'))
         c.lerp(new THREE.Color(0xb5793a), autumn * 0.5);
@@ -791,6 +960,11 @@ export class Terrain {
       if (h > WATER_Y + 0.35) {
         const w = clamp(this.wear[k] + this.dirt[k], 0, 0.85);
         if (w > 0.02) c.lerp(dirtCol, w);
+      }
+      // Paved roads: packed dirt / packed-earth tint (roads.js sets _colDirty).
+      const pave = this.paved?.[k] || 0;
+      if (pave > 40 && h > WATER_Y + 0.2) {
+        c.lerp(new THREE.Color(0x6a5844), (pave / 255) * 0.55);
       }
       if (snow > 0 && h > WATER_Y + 0.5) c.lerp(new THREE.Color(0xe9edf2), snow * 0.7);
       const f = this.fogEnabled ? 0.06 + this.fog[k] * 0.94 : 1;
@@ -802,7 +976,7 @@ export class Terrain {
 
   update(dt, sunDir) {
     this.time += dt;
-    this.water.position.y = WATER_Y + Math.sin(this.time * 0.06) * 0.22;
+    this.water.position.y = WATER_Y + Math.sin(this.time * 0.04) * 0.06;
     if (this.oceanUniforms) {
       this.oceanUniforms.uTime.value = this.time;
       if (sunDir) this.oceanUniforms.uSunDir.value.copy(sunDir);
@@ -822,6 +996,7 @@ export class Terrain {
       this.recolor();
       // Terraforming changed the heightfield: refresh the ocean depth texture.
       this._oceanSetHeights?.(this.heights);
+      this._oceanSetFresh?.(this.fresh);
     }
   }
 }
@@ -908,9 +1083,9 @@ export class Cycles {
     this.snow.visible = false;
     scene.add(this.snow);
 
-    // Visible sinusoidal wind lines (Equilinox / B&W inspired)
-    const WL = 48;
-    this._windSegs = 28;
+    // Visible wind ribbons — few, along the wind, only when you pull the camera back
+    const WL = 16;
+    this._windSegs = 22;
     this.windLines = [];
     for (let i = 0; i < WL; i++) {
       const pts = [];
@@ -991,6 +1166,13 @@ export class Cycles {
     const daySky = new THREE.Color(skyByWeather[this.weather] || 0x87b8e8);
     const nightSky = new THREE.Color(this.moonOut ? 0x141a30 : 0x0a0e1c);
     const sky = nightSky.clone().lerp(daySky, dayAmt);
+    // Dawn / dusk: the sky arranges itself when the sun is on the horizon.
+    const horizonGlow = clamp(1 - Math.abs(sunY) * 3.4, 0, 1);
+    if (horizonGlow > 0.02) {
+      const rise = sunX > 0;
+      const glow = new THREE.Color(rise ? 0xff8a4a : 0xff6a38);
+      sky.lerp(glow, horizonGlow * 0.55 * (0.5 + dim * 0.5));
+    }
     this.scene.background = sky;
     this.scene.fog.color.copy(sky);
 
@@ -999,11 +1181,11 @@ export class Cycles {
     const sunVis = ({ sunny: 1, heatwave: 0.9, cloudy: 0.35, snow: 0.25 }[this.weather] || 0.1) * dayAmt;
     if (this.skyUniforms) {
       const u = this.skyUniforms;
-      u.uHorizon.value.copy(sky).lerp(new THREE.Color(0xffffff), 0.38 * dayAmt);
+      u.uHorizon.value.copy(sky).lerp(new THREE.Color(horizonGlow > 0.1 ? 0xffc090 : 0xffffff), 0.38 * dayAmt + horizonGlow * 0.35);
       u.uMid.value.copy(sky);
       u.uZenith.value.copy(sky).multiplyScalar(0.55 + 0.1 * (1 - dayAmt));
       u.uSunDir.value.copy(this.sun.position).normalize();
-      u.uSunAmt.value = sunVis;
+      u.uSunAmt.value = Math.max(sunVis, horizonGlow * 0.45);
     }
     if (this.oceanUniforms) {
       const u = this.oceanUniforms;
@@ -1012,6 +1194,16 @@ export class Cycles {
       u.uSkyColor.value.copy(sky);
       u.uFogNear.value = this.scene.fog.near;
       u.uFogFar.value = this.scene.fog.far;
+      const stormN = this.weather === 'storm' || this.weather === 'blizzard' ? 1
+        : this.weather === 'rain' || this.weather === 'snow' ? 0.45
+        : this.weather === 'cloudy' ? 0.18 : 0.04;
+      u.uStorm.value = stormN;
+      u.uWaveAmp.value = 0.06 + stormN * 0.55 + this.wind * 0.25;
+      const cold = this.seasonIndex === 3 ? 1 : 0;
+      const hot = this.weather === 'heatwave' || this.seasonIndex === 1 ? 1 : 0;
+      u.uDeep.value.setHex(cold ? 0x1a3348 : hot ? 0x1a4a62 : 0x1e3a5f);
+      u.uMid.value.setHex(cold ? 0x4a6a88 : hot ? 0x3cb0c8 : 0x4a90d9);
+      u.uLight.value.setHex(cold ? 0xc8d8e8 : hot ? 0x9ee8e0 : 0xa8d8ea);
     }
 
     const s = this.seasonIndex;
@@ -1021,10 +1213,13 @@ export class Cycles {
 
     // animate wind ribbons — parallel sinusoids morphing with strength
     if (this.windLines) {
+      const camDist = camera?.position ? camera.position.length() : 80;
+      const show = camDist > 55;
       const amp = 0.4 + this.wind * 2.2;
       const len = 18 + this.wind * 22;
       for (const line of this.windLines) {
-        line.material.opacity = 0.08 + this.wind * 0.28;
+        line.visible = show;
+        line.material.opacity = 0.1 + this.wind * 0.32;
         const pos = line.geometry.attributes.position;
         const ph = line.userData.phase + this.time * (0.6 + this.wind);
         // drift anchors with wind

@@ -21,6 +21,8 @@ export class RoadNetwork {
     this.terrain = terrain;
     /** Pave quality 0..255 per cell (0 = unpaved). */
     this.paved = new Uint8Array(V * V);
+    // Terrain.recolor tints paved cells; share the buffer so it can read it.
+    terrain.paved = this.paved;
     /** @type {{a: object, b: object, points: {x:number,z:number}[], done: number}[]} */
     this.routes = [];
     this.stats = { cellsPaved: 0, routesPlanned: 0, routesCompleted: 0 };

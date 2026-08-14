@@ -6,6 +6,7 @@ import { CameraRig, GodCursor } from './cursor.js';
 import { CIV_KEYS } from './civs.js';
 import { detectPlatform, loadKeybinds, buildUserReport } from './platform.js';
 import { Campaign } from './quests/campaign.js';
+import { clamp } from './util.js';
 
 const canvas = document.getElementById('game-canvas');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -17,7 +18,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0d0f14);
 
-const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 600);
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.08, 900);
 const rig = new CameraRig(camera);
 
 // Detect language / hardware / keyboard on launch (French → AZERTY on Mac M1, etc.)
@@ -59,7 +60,7 @@ function setTimeMode(mode) {
 }
 
 const ui = new UI({
-  onStartGame: (mode, civKey) => startGame(mode, civKey),
+  onStartGame: (mode, civKey, mission, seed) => startGame(mode, civKey, mission, seed),
   onQuitGame: () => endGame(),
   onSelectTool: (tool) => {
     cursor.tool = tool;
@@ -95,15 +96,6 @@ window.addEventListener('keydown', (e) => {
     setTimeMode(order[i]);
   }
 });
-document.getElementById('btn-invoke')?.addEventListener('click', () => {
-  cursor.tool = 'invoke';
-  document.querySelectorAll('#hud-tools .tool').forEach(b => b.classList.toggle('selected', b.dataset.tool === 'invoke'));
-  ui.msg('Invoke: click valid ground — costs ✦, needs faith & matching biome');
-});
-document.getElementById('btn-influence')?.addEventListener('click', () => {
-  if (!game) return;
-  game.toggleInfluence();
-});
 setTimeMode('play');
 
 const cursor = new GodCursor({
@@ -113,7 +105,7 @@ const cursor = new GodCursor({
   msg: (t) => ui.msg(t),
 });
 
-function startGame(mode, playerCiv, mission = null) {
+function startGame(mode, playerCiv, mission = null, worldSeed = '') {
   endGame();
   ui.saveSettings?.();
   // Game construction is a legitimately long synchronous job (worldgen,
@@ -129,6 +121,7 @@ function startGame(mode, playerCiv, mission = null) {
   game = new Game({
     scene, camera, mode, playerCiv, enemyCiv,
     settings: ui.settings,
+    worldSeed,
     msg: (t, pos) => ui.msg(t, pos),
     onEnd: (result) => {
       // Story mode: finishing every quest in the manifest unlocks the next
@@ -145,9 +138,7 @@ function startGame(mode, playerCiv, mission = null) {
   ui.attachGame(game);
   window.__game = game; // dev hook: live instance for console debugging
   ui.showHUD();
-  ui.msg(mode === 'battle'
-    ? `Convert or exterminate the ${game.civOf('enemy')} before time runs out`
-    : 'Construction mode — shape the world freely');
+  ui.msg(game.loopStatus().brief);
 
   // aim camera at the player's campfire
   const home = game.homeOf('player');
@@ -257,6 +248,11 @@ function loop(now) {
   // camera always responsive; simulation respects time scale
   if (game && !game.over) {
     rig.update(raw, ui.settings.camspeed, game.terrain);
+    if (scene.fog) {
+      const t = clamp((rig.dist - 8) / 180, 0, 1);
+      scene.fog.near = 28 + t * 90;
+      scene.fog.far = 95 + t * 420;
+    }
     const simDt = raw * timeScale;
     if (simDt > 0) game.update(simDt);
     else {

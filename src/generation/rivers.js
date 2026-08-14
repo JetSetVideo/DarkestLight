@@ -67,6 +67,7 @@ export class River {
           const target = Math.min(terrain.heights[k], orig - cut);
           terrain.heights[k] = target;
           pos.setY(k, target);
+          if (target < WATER_Y + 0.2) terrain.fresh[k] = 1;
         }
       }
     }

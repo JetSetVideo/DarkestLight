@@ -12,6 +12,8 @@ export class CameraRig {
     this.yaw = 0.6;
     this.pitch = 0.9;
     this.dist = 42;
+    this.minDist = 3.5;
+    this.maxDist = 210;
     this.keys = {};
     this.binds = { panForward: 'w', panBack: 's', panLeft: 'a', panRight: 'd' };
     window.addEventListener('keydown', e => { this.keys[e.key.toLowerCase()] = true; });
@@ -38,6 +40,11 @@ export class CameraRig {
       Math.cos(this.yaw) * Math.cos(this.pitch),
     ).multiplyScalar(this.dist);
     this.camera.position.copy(this.target).add(off);
+    if (terrain) {
+      const h = terrain.getHeight(this.camera.position.x, this.camera.position.z);
+      const floor = Math.max(h, 0) + 2.4;
+      if (this.camera.position.y < floor) this.camera.position.y = floor;
+    }
     this.camera.lookAt(this.target);
   }
   /** Drag-pan: mouse drag opposite to desired camera motion. */
@@ -53,9 +60,13 @@ export class CameraRig {
   }
   rotate(dx, dy) {
     this.yaw -= dx * 0.005;
-    this.pitch = clamp(this.pitch + dy * 0.004, 0.35, 1.4);
+    const close = this.dist < 18;
+    this.pitch = clamp(this.pitch + dy * 0.004, close ? 0.18 : 0.28, this.dist > 90 ? 1.52 : 1.42);
   }
-  zoom(delta) { this.dist = clamp(this.dist * (delta > 0 ? 1.1 : 0.9), 12, 110); }
+  /** Close enough to read faces; far enough to see the whole island. */
+  zoom(delta) {
+    this.dist = clamp(this.dist * (delta > 0 ? 1.12 : 0.88), this.minDist, this.maxDist);
+  }
 }
 
 export class GodCursor {
@@ -78,6 +89,9 @@ export class GodCursor {
     this.downTime = 0;
     this.gesturePts = [];     // screen path for slap / pet
     this.scoop = null;        // { kind, amount, mesh }
+    this.waterBowl = null;
+    this._bowlMesh = null;
+    this._saltWarned = false;
     this.lifting = false;
     this.panning = false;
     this.rotating = false;
@@ -109,6 +123,28 @@ export class GodCursor {
       this.phantom.material?.dispose?.();
       this.phantom = null;
     }
+  }
+
+  ensureBowlMesh(game, p) {
+    if (this._bowlMesh) return;
+    const geo = new THREE.SphereGeometry(0.28, 12, 10);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x4aa8c8, emissive: 0x1a4060, transparent: true, opacity: 0.72, roughness: 0.25,
+    });
+    this._bowlMesh = new THREE.Mesh(geo, mat);
+    this._bowlMesh.position.set(p.x, p.y + 1.6, p.z);
+    game.scene.add(this._bowlMesh);
+  }
+
+  clearBowl() {
+    const game = this.getGame();
+    if (this._bowlMesh) {
+      game?.scene.remove(this._bowlMesh);
+      this._bowlMesh.geometry?.dispose?.();
+      this._bowlMesh.material?.dispose?.();
+      this._bowlMesh = null;
+    }
+    this.waterBowl = null;
   }
 
   ensurePhantom(fp) {
@@ -179,7 +215,21 @@ export class GodCursor {
     for (const h of hits) {
       let o = h.object;
       while (o && !o.userData.entity) o = o.parent;
-      if (o) return o.userData.entity;
+      if (!o) continue;
+      const ent = o.userData.entity;
+      // Wood already in the hearth is burning — never harvest it.
+      if (o.userData.hearthFuel || ent?.hearthFuel) {
+        let b = o;
+        while (b && !(b.userData.entity instanceof Building)) b = b.parent;
+        if (b?.userData.entity) return b.userData.entity;
+        continue;
+      }
+      if (ent instanceof ResourceNode) {
+        const hearth = game.buildings.find((b) => b.type === 'campfire'
+          && (b.pos.x - ent.pos.x) ** 2 + (b.pos.z - ent.pos.z) ** 2 < 18);
+        if (hearth) return hearth;
+      }
+      return ent;
     }
     return null;
   }
@@ -208,6 +258,7 @@ export class GodCursor {
         this.gesturePts = [{ x: e.clientX, y: e.clientY, t: this.downTime }];
         this.lifting = false;
         this.panning = false;
+        this._saltWarned = false;
         break;
       }
       case 'spell': {
@@ -304,24 +355,37 @@ export class GodCursor {
       return;
     }
 
-    // Hand: 1s hold-to-lift; otherwise pan empty ground; track gestures for slap/pet
+    // Hand: 1s hold-to-lift; hold on a lake for a water bowl; otherwise pan
     if (this.tool === 'hand' && this.downAt && !this.held) {
       this.gesturePts.push({ x: e.clientX, y: e.clientY, t: performance.now() });
       const heldMs = performance.now() - this.downTime;
       const moved = Math.hypot(e.clientX - this.downAt.x, e.clientY - this.downAt.y);
       const onGrabbable = this.downEntity && this.grabbable(this.downEntity);
-      if (onGrabbable && heldMs >= 1000 && !this.panning) {
+      if (this.waterBowl) {
+        const p = this.groundPoint(e);
+        if (p && this._bowlMesh) this._bowlMesh.position.set(p.x, p.y + 1.7, p.z);
+      } else if (onGrabbable && heldMs >= 1000 && !this.panning) {
         this.held = this.downEntity;
         this.held.held = true;
         this.holdHistory = [];
         this.lifting = true;
         this.msg('Levitating…');
-      } else if ((!onGrabbable || heldMs < 1000) && moved > 14 && !onGrabbable) {
+      } else if (!onGrabbable && heldMs >= 900 && moved < 22 && !this.panning) {
+        const p = this.groundPoint(e);
+        if (p && game.terrain.isFresh(p.x, p.z)) {
+          this.waterBowl = { kind: 'water', amount: 10 + ((game.rng() * 6) | 0) };
+          this.ensureBowlMesh(game, p);
+          this.msg('A bowl of fresh water rises');
+        } else if (p && game.terrain.isWater(p.x, p.z) && !this._saltWarned) {
+          this._saltWarned = true;
+          this.msg('The sea is salt — find a lake');
+        }
+      } else if ((!onGrabbable || heldMs < 1000) && moved > 14 && !onGrabbable && !this.waterBowl) {
         this.panning = true;
         this.rig.panByDrag(e.movementX, e.movementY);
       } else if (onGrabbable && moved > 40 && heldMs < 450) {
         // keep tracking for slap; don't pan yet
-      } else if (!onGrabbable && moved > 8) {
+      } else if (!onGrabbable && moved > 8 && !this.waterBowl) {
         this.panning = true;
         this.rig.panByDrag(e.movementX, e.movementY);
       }
@@ -329,8 +393,8 @@ export class GodCursor {
     if (this.held) {
       const p = this.groundPoint(e);
       if (p) {
-        const lift = 2.0 + Math.min(1.2, (performance.now() - this.downTime) / 1000);
-        this.held.mesh.position.set(p.x, p.y + lift, p.z);
+        const lift = 0.55 + Math.min(0.28, (performance.now() - this.downTime) / 5000);
+        this.held.mesh.position.set(p.x + 0.7, p.y + lift, p.z + 0.25);
         this.holdHistory.push({ x: p.x, z: p.z, t: performance.now() / 1000 });
         if (this.holdHistory.length > 30) this.holdHistory.shift();
         this.checkShake();
@@ -376,6 +440,17 @@ export class GodCursor {
     }
 
     if (this.tool === 'hand') {
+      if (this.waterBowl) {
+        const p = this.groundPoint(e) || this._bowlMesh?.position;
+        if (p) game.dropScoop('player', this.waterBowl, p.x, p.z);
+        this.clearBowl();
+        this.downAt = null;
+        this.downEntity = null;
+        this.panning = false;
+        this.gesturePts = [];
+        this._saltWarned = false;
+        return;
+      }
       if (this.held) {
         const h = this.holdHistory;
         let vx = 0, vz = 0;
@@ -406,20 +481,28 @@ export class GodCursor {
           if (sp > 7) this.msg('Not enough ✦ to hurl (3 ✦)');
           const p = this.held.mesh.position;
           p.y = game.terrain.getHeight(p.x, p.z);
+          if (this.held instanceof Animal) game.tryCookAnimal(this.held);
+          else if (this.held instanceof Creature) {
+            const note = game.assignDropTask(this.held, p.x, p.z);
+            if (note) this.msg(`${this.held.name} — ${note}`);
+          }
         }
         this.held = null;
       } else if (this.downAt && !this.panning && this.downEntity) {
         const gesture = this.classifyGesture(this.gesturePts);
         if (gesture === 'slap' && this.downEntity instanceof Creature) {
-          this.downEntity.fear = Math.min(1, this.downEntity.fear + 0.55);
-          this.downEntity.beliefs.player = clamp(this.downEntity.beliefs.player - 4, 0, 100);
+          const inter = this.downEntity.dna?.interactivity ?? 0.5;
+          this.downEntity.fear = Math.min(1, this.downEntity.fear + 0.55 * (0.55 + inter));
+          this.downEntity.beliefs.player = clamp(this.downEntity.beliefs.player - (3 + inter * 4), 0, 100);
           this.downEntity.alert = Math.max(this.downEntity.alert, 4);
           game.recordGodTouch?.('slap');
           this.msg(`${this.downEntity.name} recoils from the slap`);
         } else if (gesture === 'pet' && this.downEntity instanceof Creature) {
-          this.downEntity.fear = Math.max(0, this.downEntity.fear - 0.4);
-          this.downEntity.beliefs.player = clamp(this.downEntity.beliefs.player + 10, 0, 100);
-          this.downEntity.hp = Math.min(this.downEntity.maxHp, this.downEntity.hp + 8);
+          const emo = this.downEntity.dna?.emotion ?? 0.5;
+          const inter = this.downEntity.dna?.interactivity ?? 0.5;
+          this.downEntity.fear = Math.max(0, this.downEntity.fear - 0.4 * (0.5 + emo));
+          this.downEntity.beliefs.player = clamp(this.downEntity.beliefs.player + 10 * (0.5 + emo + inter * 0.3), 0, 100);
+          this.downEntity.hp = Math.min(this.downEntity.maxHp, this.downEntity.hp + 8 * (0.6 + inter));
           game.recordGodTouch?.('pet');
           this.msg(`${this.downEntity.name} softens under your hand`);
         } else {
@@ -432,6 +515,7 @@ export class GodCursor {
       this.downEntity = null;
       this.panning = false;
       this.gesturePts = [];
+      this._saltWarned = false;
     }
 
     if (this.tool === 'spell' && this.spellPts.length) {

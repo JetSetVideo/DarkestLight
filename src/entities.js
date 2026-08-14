@@ -2,18 +2,22 @@
 // cumulative titles, sleep/alert states, awareness-based task claiming,
 // animals (incl. snakes & fish), monsters, buildings and resources.
 import { CIVS, CLASSES, BUILDINGS, JOB_LABEL, TITLES } from './civs.js';
-import { buildHuman, buildAnimal, buildMonster, buildTree, buildBush, buildRock, buildMetalOre, buildStick, buildBuilding, buildRelic } from './models.js';
+import { buildHuman, buildAnimal, buildMonster, buildTree, buildBush, buildRock, buildMetalOre, buildStick, buildBuilding, buildRelic, updateCampfireVisual } from './models.js';
 import { clamp, lerp, genName, dist2, dlGuard } from './util.js';
-import { WATER_Y } from './world.js';
+import { WATER_Y, cellContext } from './world.js';
 import { iconForTask, STATUS_ICONS } from './actions.js';
 import {
   GENES, makeGenome, mixGenome, phenotypeMap, dnaString as genomeString,
   genomeFromLegacy, isHybrid, dnaLociTable,
 } from './dna.js';
 import * as THREE from 'three';
-import { scheduledIntent } from './ai/schedule.js';
+import { scheduledIntent, rhythmFor } from './ai/schedule.js';
 import { COMPANIONS, canTame, canAfford, payFor } from './ai/crafting.js';
 import { PAVE_COST_WOOD } from './engine/roads.js';
+import {
+  shouldReturnToFire, SLEEP_SLOT_R2, flockOffset, workPartyYield,
+  activeUrge, relationsOf,
+} from './ai/swarm.js';
 
 /**
  * Back-link a mesh tree to its entity for picking (cursor.js walks up parents
@@ -110,6 +114,7 @@ export class Creature {
     this.morale = 60;                        // 0..100, sways with events
     this.willpower = 35 + (this.dna.willpower ?? this.dna.intelligence ?? 0.5) * 55;
     this.family = { parents: [], children: [], spouse: null };
+    this.jobXp = { gather: 0, hunt: 0, fight: 0, build: 0, fish: 0 };
     this.rebuildMesh(x, z);
     this.walkPhase = game.rng() * 10;
     this._iconT = 0;
@@ -127,7 +132,10 @@ export class Creature {
     }
     tagEntity(this.mesh, this);
     this.game.scene.add(this.mesh);
+    this._iconSprite = null;
+    this._vitalsSprite = null;
     this._ensureStatusIcon();
+    this._ensureVitalsBar();
   }
 
   _ensureStatusIcon() {
@@ -147,6 +155,89 @@ export class Creature {
     this.mesh.add(this._iconSprite);
     this._iconTex = tex;
     this._iconKey = null;
+  }
+
+  _ensureVitalsBar() {
+    if (this._vitalsSprite) return;
+    if (typeof document === 'undefined') return;
+    const canvas = document.createElement('canvas');
+    canvas.width = 64; canvas.height = 16;
+    this._vitalsCanvas = canvas;
+    this._vitalsCtx = canvas.getContext('2d');
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.magFilter = THREE.NearestFilter;
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+    this._vitalsSprite = new THREE.Sprite(mat);
+    this._vitalsSprite.scale.set(0.72, 0.18, 1);
+    this._vitalsSprite.position.y = 1.18;
+    this.mesh.add(this._vitalsSprite);
+    this._vitalsTex = tex;
+    this._vitalsSprite.visible = false;
+  }
+
+  _ensureVitalsRings() {
+    if (this._hpRing) return;
+    const mk = (inner, outer, color) => {
+      const geo = new THREE.RingGeometry(inner, outer, 28);
+      geo.rotateX(-Math.PI / 2);
+      const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+        color, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false,
+      }));
+      m.position.y = 0.05;
+      m.visible = false;
+      this.mesh.add(m);
+      return m;
+    };
+    this._hpRing = mk(0.42, 0.54, 0xc0504d);
+    this._stamRing = mk(0.28, 0.38, 0xe8c064);
+  }
+
+  _drawVitalsBar() {
+    if (this._vitalsSprite) this._vitalsSprite.visible = false;
+    this._ensureVitalsRings();
+    const selected = this.game.selected === this;
+    const hp = clamp(this.hp / this.maxHp, 0, 1);
+    const stam = clamp(this.energy / this.maxEnergy, 0, 1);
+    if (this._hpRing) {
+      this._hpRing.visible = selected;
+      this._hpRing.scale.setScalar(0.55 + hp * 0.5);
+      this._hpRing.material.opacity = 0.4 + hp * 0.5;
+    }
+    if (this._stamRing) {
+      this._stamRing.visible = selected;
+      this._stamRing.scale.setScalar(0.55 + stam * 0.5);
+      this._stamRing.material.opacity = 0.35 + stam * 0.5;
+    }
+    this._drawVisionCone(selected);
+  }
+
+  _drawVisionCone(selected) {
+    if (!this._visMesh) {
+      const wedge = new THREE.CircleGeometry(1, 16, -0.5, 1.0);
+      wedge.rotateX(-Math.PI / 2);
+      wedge.rotateY(Math.PI / 2); // local +Z is facing
+      this._visMesh = new THREE.Mesh(wedge, new THREE.MeshBasicMaterial({
+        color: 0xc9e8a8, transparent: true, opacity: 0.14, side: THREE.DoubleSide, depthWrite: false,
+      }));
+      this._visMesh.position.y = 0.05;
+      this.mesh.add(this._visMesh);
+      const disk = new THREE.CircleGeometry(1, 14);
+      disk.rotateX(-Math.PI / 2);
+      this._visDisk = new THREE.Mesh(disk, new THREE.MeshBasicMaterial({
+        color: 0xb8d4a0, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false,
+      }));
+      this._visDisk.position.y = 0.04;
+      this.mesh.add(this._visDisk);
+    }
+    const mine = this.side === 'player';
+    this._visMesh.visible = mine;
+    this._visDisk.visible = mine;
+    if (!mine) return;
+    const r = this.visionRadius;
+    this._visMesh.scale.set(r * 0.92, 1, r * 0.92);
+    this._visDisk.scale.set(r * 0.28, 1, r * 0.28);
+    this._visMesh.material.opacity = selected ? 0.2 : 0.08;
+    this._visDisk.material.opacity = selected ? 0.12 : 0.05;
   }
 
   _drawStatusIcon(key) {
@@ -179,6 +270,8 @@ export class Creature {
       holding: !!this.holding,
       yields: this.claimed?.yields,
       shaman: this.cls === 'shaman' && this.task === 'pray',
+      drowning: this.game.terrain.isWater(this.pos.x, this.pos.z) && (this.dna.swim ?? 0.5) < 0.25,
+      companion: !!this.companion,
     });
     if (key !== this._iconKey || (STATUS_ICONS[key]?.fade || STATUS_ICONS[key]?.bob)) {
       this._iconKey = key;
@@ -235,8 +328,12 @@ export class Creature {
     else if (this.game.ecology) s *= this.game.ecology.speedFactorAt(x, z);
     // A mount or draught animal carries you faster.
     s *= this.companionBonus('speed');
+    if (this.sex === 'F') s *= 1.05;
+    else s *= 0.97;
+    if (this.carryTotal > 0.4) s *= 0.72 + Math.min(0.2, this.jobLevel('gather') * 0.03);
     return s;
   }
+  jobLevel(role) { return 1 + Math.floor((this.jobXp?.[role] || 0) / 36); }
   get strength() {
     const cls = CLASSES[this.cls];
     let s = cls.baseStr * (0.55 + this.dna.strength * 0.9) * this.ageMul * this.favorMul;
@@ -262,9 +359,9 @@ export class Creature {
   }
   get visionRadius() {
     const cy = this.game.cycles;
-    if (!cy.isNight) return 10;
-    const n = this.nightSight;
-    return cy.moonOut ? lerp(4.5, 10, n) : lerp(3, 7, n);
+    const eye = 0.45 + (this.dna.nightsight ?? 0.4) * 0.7;
+    const light = cy.isNight ? (cy.moonOut ? 0.55 : 0.32) : 1;
+    return (4.2 + eye * 2.4) * light;
   }
   get emotion() {
     if (this.task === 'panic') return 'panicking';
@@ -282,6 +379,10 @@ export class Creature {
   get carryTotal() {
     const c = this.carrying;
     return (c.food || 0) + (c.wood || 0) + (c.rock || 0) + (c.metal || 0);
+  }
+  get carryCap() {
+    const sex = this.sex === 'M' ? 1.12 : 0.9;
+    return (10 + this.dna.strength * 6) * this.ageMul * sex * this.companionBonus('carry');
   }
 
   // ------------------------- Phase 3: tools & companions -------------------
@@ -372,17 +473,39 @@ export class Creature {
     this.fear = fearless ? 0 : Math.max(0, this.fear - dt * 0.12);
     this.alert = Math.max(0, this.alert - dt);
 
-    // energy: sprint drains fast, idle/walk recovers
-    if (this.sprinting && this._moving) {
-      this.energy = Math.max(0, this.energy - dt * 28);
-      if (this.energy <= 0) { this.sprinting = false; if (this.task === 'panic') this.fear = Math.min(this.fear, 0.45); }
+    // Stamina: the waking day wears people down; sleep is what fills the bar.
+    if (this.task === 'sleep') {
+      this.energy = Math.min(this.maxEnergy, this.energy + dt * 24);
     } else {
-      this.energy = Math.min(this.maxEnergy, this.energy + dt * (this.task === 'sleep' ? 12 : 4));
+      const labor = (this.task === 'harvest' || this.task === 'work' || this.task === 'build' || this.task === 'level') ? 1.4 : 1;
+      const dayDrain = g.cycles.isNight ? 0.35 : 2.6;
+      this.energy = Math.max(0, this.energy - dt * dayDrain * labor);
+      if (this.sprinting && this._moving) {
+        this.energy = Math.max(0, this.energy - dt * 22);
+        if (this.energy <= 0) {
+          this.sprinting = false;
+          if (this.task === 'panic') this.fear = Math.min(this.fear, 0.45);
+        }
+      }
+    }
+    // Ongoing climate adaptation: heat/cold/moisture genes vs local cell.
+    {
+      const k = g.terrain.idx(this.pos.x, this.pos.z);
+      const temp = g.terrain.temperature[k] ?? 0.5;
+      const hum = g.terrain.humidity[k] ?? 0.5;
+      const heat = this.dna.heatTolerance ?? 0.5;
+      const cold = this.dna.coldTolerance ?? 0.5;
+      const moist = this.dna.moistureAffinity ?? 0.5;
+      if (temp > 0.72) this.energy = Math.max(0, this.energy - dt * 1.6 * (1 - heat));
+      if (temp < 0.28) this.energy = Math.max(0, this.energy - dt * 1.6 * (1 - cold));
+      if (hum > 0.7) this.energy = Math.min(this.maxEnergy, this.energy + dt * moist * 0.4);
+      else if (hum < 0.25) this.energy = Math.max(0, this.energy - dt * (1 - moist) * 0.5);
     }
 
     if (this.held) {
       this.animateFlail(dt);
       this.refreshStatusIcon();
+      this._drawVitalsBar();
       return;
     }
 
@@ -424,12 +547,18 @@ export class Creature {
     if (this.task === 'sleep') {
       this.mesh.rotation.x = lerp(this.mesh.rotation.x, -1.35, dt * 4);
       this.hp = Math.min(this.maxHp, this.hp + dt * 1.2);
+      const hearth = g.homeOf(this.side);
+      if (hearth) {
+        const hx = hearth.pos.x - this.pos.x, hz = hearth.pos.z - this.pos.z;
+        this.mesh.rotation.y = Math.atan2(hx, hz);
+      }
     } else {
       this.mesh.rotation.x = lerp(this.mesh.rotation.x, 0, dt * 6);
       this.act(dt);
       this.animate(dt);
     }
     this.refreshStatusIcon();
+    this._drawVitalsBar();
 
     // title auras (awareness of who leads and who excels)
     if (this.titles.includes('prince') || this.titles.includes('princess') || this.cls === 'princess') {
@@ -441,7 +570,7 @@ export class Creature {
       }
     }
 
-    let drift = 0.15;
+    let drift = 0.15 * (0.7 + (this.dna.faithAffinity ?? 0.5) * 0.8);
     if (g.hasTech(this.side, 'chivalry')) drift *= 1.5;
     this.beliefs[this.side] = clamp(this.beliefs[this.side] + dt * drift, 0, 100);
   }
@@ -464,7 +593,7 @@ export class Creature {
       this.alert = Math.max(this.alert, 6);
       for (const c of g.creatures)
         if (c.side === this.side && c !== this && dist2(c.pos.x, c.pos.z, this.pos.x, this.pos.z) <
-          (g.hasTech(this.side, 'discipline') ? 90 : 50))
+          (g.hasTech(this.side, 'discipline') ? 90 : 50) * this.companionBonus('alertRadius'))
           c.alert = Math.max(c.alert, 4);
     }
 
@@ -485,7 +614,35 @@ export class Creature {
       this.target = home.pos.clone();
       return;
     }
-    if (this.lifeStage === 'child') { this.task = 'wander'; this.pickWanderNear(home.pos, 5); return; }
+    if (this.lifeStage === 'child') {
+      if (shouldReturnToFire(this, g, home)) {
+        const slot = this._sleepSlot || home.pos;
+        if (dist2(this.pos.x, this.pos.z, slot.x, slot.z) < SLEEP_SLOT_R2) {
+          this.task = 'sleep'; this.target = null; this.sprinting = false;
+        } else {
+          this.task = 'retreat'; this.target = slot.clone ? slot.clone() : slot;
+        }
+        return;
+      }
+      const parent = this.family?.parents?.find(p => p.hp > 0);
+      if (parent && dist2(this.pos.x, this.pos.z, parent.pos.x, parent.pos.z) > 36) {
+        this.task = 'wander'; this.target = parent.pos.clone(); return;
+      }
+      this.task = 'wander'; this.pickWanderNear(home.pos, 5); return;
+    }
+
+    // First minutes: pack the earth around the new hearth so the village appears.
+    if (g.elapsed < 14 && !this.isWarrior && this.energy > 28 && CLASSES[this.cls]?.role === 'gather') {
+      const a = g.rng() * Math.PI * 2, r = 2 + g.rng() * 6;
+      this.task = 'level';
+      this.target = new THREE.Vector3(home.pos.x + Math.cos(a) * r, 0, home.pos.z + Math.sin(a) * r);
+      return;
+    }
+    if (g.elapsed < 12 && this.cls === 'hunter' && this.energy > 22) {
+      this.task = 'explore';
+      this.pickWanderNear(home.pos, 16 + (this.dna.curiosity ?? 0.5) * 18);
+      return;
+    }
 
     // join an unfinished construction site (workers)
     if (CLASSES[this.cls].role === 'gather' && this.carryTotal < 2) {
@@ -498,38 +655,92 @@ export class Creature {
       }
     }
 
-    // Daily schedule (Phase 3). Advisory only: warriors, alerted and
-    // frightened units ignore the clock, which is what stops a unit walking
-    // home to bed in the middle of a raid.
-    if (!this.isWarrior && this.cls !== 'monk' && this.alert <= 0 && this.fear < 0.3) {
+    // Exhausted warriors still lie down in the sleep ring — a raid overrides via alert.
+    if (this.isWarrior && this.alert <= 0 && this.fear < 0.3 && this.energy < 22
+        && shouldReturnToFire(this, g, home)) {
+      const slot = this._sleepSlot || home.pos;
+      if (dist2(this.pos.x, this.pos.z, slot.x, slot.z) < SLEEP_SLOT_R2) {
+        this.task = 'sleep'; this.target = null; this.sprinting = false;
+      } else {
+        this.task = 'retreat'; this.target = slot.clone ? slot.clone() : slot;
+      }
+      return;
+    }
+
+    // Daily / seasonal timetable. Advisory: warriors, alerted and frightened
+    // units ignore the clock so nobody walks to bed in the middle of a raid.
+    if (!this.isWarrior && this.alert <= 0 && this.fear < 0.3) {
       const intent = scheduledIntent({
         hour: g.cycles.hour,
         era: g.eraOf(this.side),
         cls: this.cls,
         energy: this.energy,
         rng: g.rng,
+        season: g.cycles.season,
+        night: g.cycles.isNight,
       });
-      if (intent === 'sleep') {
+      if (intent === 'sleep' || shouldReturnToFire(this, g, home)) {
         this.releaseClaim();
-        this.sprinting = false;
-        if (nearHome) { this.task = 'sleep'; this.target = null; }
-        else { this.task = 'retreat'; this.target = home.pos.clone(); }
-        return;
+        this.sprinting = g.cycles.isNight && this.energy > 22;
+        const slot = this._sleepSlot || home.pos;
+        const atSlot = dist2(this.pos.x, this.pos.z, slot.x, slot.z) < SLEEP_SLOT_R2;
+        if (atSlot && (nearHome || shouldReturnToFire(this, g, home))) {
+          this.task = 'sleep'; this.target = null; this.sprinting = false;
+        } else if (shouldReturnToFire(this, g, home) || intent === 'sleep') {
+          this.task = 'retreat';
+          this.target = slot.clone ? slot.clone() : new THREE.Vector3(slot.x, 0, slot.z);
+        }
+        if (this.task === 'sleep' || this.task === 'retreat') return;
       }
       if (intent === 'pray' && nearHome) {
         this.releaseClaim();
         this.task = 'pray'; this.target = null;
         return;
       }
+      if (intent === 'rest' && nearHome) {
+        this.releaseClaim();
+        this.task = 'wander';
+        this.pickWanderNear(home.pos, 5);
+        return;
+      }
+      if (intent === 'build') {
+        const site = g.nearestConstruction(this);
+        if (site) {
+          this.releaseClaim();
+          this.task = 'build';
+          this.target = site;
+          return;
+        }
+      }
+      if (intent === 'work') {
+        this.task = 'work';
+        const urge = activeUrge(g, this.side);
+        const party = workPartyYield(this, g);
+        const want = urge?.yields || party || 'food';
+        const node = (urge?.node && g.resources.includes(urge.node) && !urge.node.depleted)
+          ? urge.node
+          : (g.bestResourceFor?.(this, want) || g.bestResourceFor?.(this, 'food') || g.bestResourceFor?.(this, 'wood'));
+        if (node) {
+          node.claimedBy = this.id;
+          this.claimed = node;
+          this.target = node;
+          if (urge) this.sprinting = this.energy > 28;
+          return;
+        }
+      }
     }
     if (this.task === 'sleep') this.task = 'idle';
 
     if (this.titles.includes('king') || this.titles.includes('queen') ||
         this.cls === 'king' || this.cls === 'queen') {
-      this.task = 'wander'; this.pickWanderNear(home.pos, 4); return;
+      const settled = g.popOf(this.side) >= 8 || g.hasTech(this.side, 'masonry');
+      if (settled) {
+        this.task = 'wander'; this.pickWanderNear(home.pos, 4); return;
+      }
     }
 
     switch (CLASSES[this.cls]?.role) {
+      case 'lead':
       case 'gather': {
         // Keep pursuing an in-progress taming. think() re-runs every tick, so
         // without this the unit re-rolls its intent before it ever reaches the
@@ -539,13 +750,15 @@ export class Creature {
             && this.target.hp > 0 && !this.target.spooked) {
           return;
         }
-        const cap = 12;
+        const cap = this.carryCap;
         if (this.holding) { this.task = 'deposit'; this.target = home; return; }
         if (this.carryTotal >= cap) { this.task = 'deposit'; this.target = home; this.sprinting = this.energy > 30; return; }
         if (this.claimed && !this.claimed.depleted && !this.claimed.held) {
           this.task = 'harvest'; this.target = this.claimed; return;
         }
         this.releaseClaim();
+        const site = g.nearestConstruction(this);
+        if (site) { this.task = 'build'; this.target = site; return; }
         const st = g.stateOf(this.side);
 
         // --- Phase 3 civic work, ahead of raw gathering ---
@@ -580,6 +793,8 @@ export class Creature {
         }
 
         // pick a need based on stockpiles, then claim a matching node / activity
+        const urge = activeUrge(g, this.side);
+        const party = workPartyYield(this, g);
         const needs = [
           { y: 'food', w: st.food < 40 ? 3 : 1 },
           { y: 'wood', w: st.wood < 50 ? 2.5 : 1 },
@@ -591,29 +806,38 @@ export class Creature {
           const score = n.w * (0.5 + g.rng());
           if (score > bestW) { bestW = score; pickY = n.y; }
         }
-        // occasional hunt / fish / explore
+        if (party) pickY = party;
+        if (urge?.yields) pickY = urge.yields;
+        if (urge) this.sprinting = this.energy > 28;
+        // occasional hunt / fish / explore — skipped while a god is urging harvest
         const roll = g.rng();
-        if (roll < 0.12 && pickY === 'food') {
-          const prey = g.nearestHuntable(this, 25);
-          if (prey) { this.task = 'hunt'; this.target = prey; return; }
-        }
-        if (roll > 0.88) {
-          const fish = g.nearestFish(this, 22);
-          if (fish) { this.task = 'fish'; this.target = fish; return; }
-        }
-        if (roll > 0.95) {
-          this.task = 'explore';
-          this.pickWanderNear(home.pos, 40);
-          return;
+        const agg = this.dna.aggression ?? 0.5;
+        const cur = this.dna.curiosity ?? 0.5;
+        if (!urge) {
+          if (roll < 0.12 + agg * 0.08 && pickY === 'food') {
+            const prey = g.nearestHuntable(this, 25 + agg * 12);
+            if (prey) { this.task = 'hunt'; this.target = prey; return; }
+          }
+          if (roll > 0.88) {
+            const fish = g.nearestFish(this, 22);
+            if (fish) { this.task = 'fish'; this.target = fish; return; }
+          }
+          if (roll > 0.95 - cur * 0.08) {
+            this.task = 'explore';
+            this.pickWanderNear(home.pos, 40);
+            return;
+          }
         }
         // pick up fallen sticks near trees
         if (!this.holding && g.rng() < 0.2) {
           const stick = g.nearestStick(this, 12);
           if (stick) { this.task = 'pickup'; this.target = stick; return; }
         }
-        const node = g.bestResourceFor(this, pickY) ||
-          g.bestResourceFor(this, 'wood') || g.bestResourceFor(this, 'food') ||
-          g.bestResourceFor(this, 'rock') || g.bestResourceFor(this, 'metal');
+        const node = (urge?.node && g.resources.includes(urge.node) && !urge.node.depleted && urge.node.yields === pickY)
+          ? urge.node
+          : (g.bestResourceFor(this, pickY) ||
+            g.bestResourceFor(this, 'wood') || g.bestResourceFor(this, 'food') ||
+            g.bestResourceFor(this, 'rock') || g.bestResourceFor(this, 'metal'));
         if (node) {
           node.claimedBy = this.id;
           this.claimed = node;
@@ -626,10 +850,13 @@ export class Creature {
         return;
       }
       case 'hunt': {
-        const cap = 12;
+        const cap = this.carryCap;
+        const agg = this.dna.aggression ?? 0.5;
         if (this.holding) { this.task = 'deposit'; this.target = home; return; }
         if (this.carryTotal >= cap) { this.task = 'deposit'; this.target = home; this.sprinting = this.energy > 30; return; }
-        const prey = g.nearestHuntable(this, 28);
+        const site = g.nearestConstruction(this);
+        if (site) { this.task = 'build'; this.target = site; return; }
+        const prey = g.nearestHuntable(this, 28 + agg * 14);
         if (prey) { this.task = 'hunt'; this.target = prey; return; }
         const fish = g.nearestFish(this, 20);
         if (fish) { this.task = 'fish'; this.target = fish; return; }
@@ -655,8 +882,13 @@ export class Creature {
         return;
       }
       case 'fight': {
-        const foe = g.nearestEnemy(this, 60);
-        if (foe && (g.stateOf(this.side).attackMode || dist2(this.pos.x, this.pos.z, foe.pos.x, foe.pos.z) < 100)) {
+        const agg = this.dna.aggression ?? 0.5;
+        const stance = relationsOf(g).stance ?? 0;
+        const foeRange = stance < -0.2 ? 60 + agg * 28 : stance > 0.35 ? 28 + agg * 10 : 60 + agg * 20;
+        const foe = g.nearestEnemy(this, foeRange);
+        // Harmony: do not hunt the other village unless already at war (attackMode) or struck.
+        const huntThem = stance < 0.35 || g.stateOf(this.side).attackMode || this.alert > 0;
+        if (huntThem && foe && (g.stateOf(this.side).attackMode || dist2(this.pos.x, this.pos.z, foe.pos.x, foe.pos.z) < 100)) {
           this.task = 'attack'; this.target = foe; return;
         }
         const mon = g.nearestMonsterNear(home.pos, 18);
@@ -724,21 +956,32 @@ export class Creature {
     const dx = tp.x - this.pos.x, dz = tp.z - this.pos.z;
     const d = Math.hypot(dx, dz) || 0.0001;
 
-    if (this.task === 'harvest' && d < 1.4) {
+    const reach = 1.5 + (this.dna.reach ?? 0.5) * 0.8 + (this.dna.height ?? 0.5) * 0.3;
+    if ((this.task === 'harvest' || this.task === 'work') && d < 1.4) {
       let mul = 3.2 * this.intelligence * g.cycles.gatherMul * (g.hasTech(this.side, 'toolmaking') ? 1.3 : 1);
       if (tgt.kind === 'bush' && g.hasTech(this.side, 'herbalism')) mul *= 1.6;
       if (g.chiefNear(this)) mul *= 1.2;
+      const cal = rhythmFor(g.eraOf(this.side), g.cycles.season);
+      mul *= cal.gatherMul || 1;
+      const urge = activeUrge(g, this.side);
+      if (urge && (urge.yields === (tgt.yields || 'wood') || !urge.yields)) mul *= urge.mul || 1.8;
       // Phase 3: an equipped tool accelerates its matching resource stream.
       if (this.tool && this.tool.yields === (tgt.yields || 'wood')) mul *= this.tool.boost;
+      mul *= 0.85 + this.jobLevel('gather') * 0.08;
       const got = tgt.harvest(dt * mul);
       const y = tgt.yields || 'wood';
       this.carrying[y] = (this.carrying[y] || 0) + got;
+      this.jobXp.gather = (this.jobXp.gather || 0) + dt * 0.9 * (0.7 + this.ageMul);
       // Phase 1: taking from the land costs the land. Biomass (wood/food)
       // strips the soil; ore and stone barely touch it.
       const bite = (y === 'wood' || y === 'food') ? 0.030 : 0.006;
       g.ecology?.drainAt(tgt.pos.x, tgt.pos.z, got * bite, 2.6);
       if (tgt.depleted) { this.releaseClaim(); this.target = null; }
       return;
+    }
+    if (this.task === 'level') {
+      g.terrain.stampDirt(this.pos.x, this.pos.z, 1.6, 0.035);
+      if (d < 1.15) { this.task = 'idle'; this.target = null; return; }
     }
     if (this.task === 'pave' && d < 1.8) {
       const route = tgt?.route;
@@ -755,7 +998,7 @@ export class Creature {
       // An approached animal goes still and wary rather than wandering off.
       // Without this a unit almost never closes the gap on a moving target,
       // and taming silently never fires.
-      if (tgt && d < 7) tgt._curious = 0.6;
+      if (tgt && d < 7) tgt._curious = Math.max(tgt._curious || 0, 0.6 + (this.dna.curiosity ?? 0.5) * 0.5);
       if (d < 2.6) {
         this.tameAttempt(tgt);
         this.task = 'idle'; this.target = null;
@@ -764,12 +1007,15 @@ export class Creature {
     }
     if (this.task === 'deposit' && d < 2.6) {
       const st = g.stateOf(this.side);
+      const woodIn = (this.carrying.wood || 0) + (this.holding ? (this.holding.amount || 1) : 0);
       st.food += this.carrying.food || 0;
       st.wood += this.carrying.wood || 0;
       st.rock += this.carrying.rock || 0;
       st.metal += this.carrying.metal || 0;
+      // Carried wood is offered to the hearth — it becomes burning fuel, not a pile you can pick.
+      const home = g.homeOf(this.side);
+      if (home && woodIn > 0) home.feedFuel(woodIn);
       if (this.holding) {
-        st.wood += this.holding.amount || 1;
         g.removeHoldable(this.holding);
         this.holding = null;
       }
@@ -778,31 +1024,41 @@ export class Creature {
       this.task = 'idle'; this.sprinting = false;
       return;
     }
-    if (this.task === 'pickup' && d < 1.2) {
-      if (tgt && tgt.holdable) {
-        this.holding = tgt;
-        tgt.heldBy = this;
-        // attach visually to hand
-        if (tgt.mesh) {
-          g.scene.remove(tgt.mesh);
-          tgt.mesh.position.set(0.22, 0.5, 0.05);
-          tgt.mesh.scale.setScalar(0.85);
-          this.mesh.add(tgt.mesh);
+    if (this.task === 'pickup') {
+      if (d >= 1.2) this._pickupT = 0;
+      else {
+        this._pickupT = (this._pickupT || 0) + dt;
+        if (this._pickupT < 0.55) return;
+        this._pickupT = 0;
+        if (tgt && tgt.holdable) {
+          this.holding = tgt;
+          tgt.heldBy = this;
+          if (tgt.mesh) {
+            g.scene.remove(tgt.mesh);
+            tgt.mesh.position.set(0.22, 0.5, 0.05);
+            tgt.mesh.scale.setScalar(0.85);
+            this.mesh.add(tgt.mesh);
+          }
+          this.target = null; this.task = 'idle';
         }
-        this.target = null; this.task = 'idle';
+        return;
       }
-      return;
     }
-    if (this.task === 'attack' && d < 1.5) {
-      if (tgt.damage) tgt.damage(this.strength * 9 * dt, this);
+    if (this.task === 'attack' && d < reach) {
+      if (tgt.damage) tgt.damage(this.strength * (9 + (this.dna.aggression ?? 0.5) * 4) * dt, this);
+      this.jobXp.fight = (this.jobXp.fight || 0) + dt * 1.4;
       if (tgt.hp !== undefined && tgt.hp <= 0) this.target = null;
       return;
     }
-    if (this.task === 'hunt' && d < 1.6) {
-      if (tgt.damage) tgt.damage(this.strength * 12 * dt, this);
+    if (this.task === 'hunt' && d < reach + 0.1) {
+      if (tgt.damage) tgt.damage(this.strength * (12 + (this.dna.aggression ?? 0.5) * 5) * dt, this);
       if (tgt.hp !== undefined && tgt.hp <= 0) {
         this.carrying.food = (this.carrying.food || 0) + (tgt.type === 'snake' ? 4 : 10);
-        this.target = null; this.task = 'idle';
+        this.jobXp.hunt = (this.jobXp.hunt || 0) + 8;
+        this.jobXp.fight = (this.jobXp.fight || 0) + 4;
+        this.task = 'deposit';
+        this.target = g.homeOf(this.side);
+        this.sprinting = this.energy > 28;
       }
       return;
     }
@@ -812,16 +1068,30 @@ export class Creature {
       if (this._fishT > 2.5) {
         this._fishT = 0;
         this.carrying.food = (this.carrying.food || 0) + 6;
+        this.jobXp.fish = (this.jobXp.fish || 0) + 5;
         if (tgt.damage) tgt.damage(99, this);
-        this.target = null; this.task = 'idle';
+        this.task = 'deposit';
+        this.target = g.homeOf(this.side);
       }
       return;
     }
     if (this.task === 'build' && d < 2.8) {
       if (tgt.constructing) {
         tgt.addWork(dt * (1.2 + this.intelligence * 0.8) * (g.chiefNear(this) ? 1.25 : 1), this);
+        this.jobXp.build = (this.jobXp.build || 0) + dt * 0.7;
         if (!tgt.constructing) { this.target = null; this.task = 'idle'; }
       } else { this.target = null; this.task = 'idle'; }
+      return;
+    }
+    if (this.task === 'water' && d < 2.4) {
+      this._waterT = (this._waterT || 0) + dt;
+      if (this._waterT > 1.6) {
+        this._waterT = 0;
+        g.ecology?.waterAt?.(this.pos.x, this.pos.z, 0.4, 2);
+        this.carrying.food = (this.carrying.food || 0) + 1;
+        this.task = 'deposit';
+        this.target = g.homeOf(this.side);
+      }
       return;
     }
     if ((this.task === 'wander' || this.task === 'patrol' || this.task === 'explore' ||
@@ -849,11 +1119,18 @@ export class Creature {
       }
     }
     dirX += sepX * 0.7; dirZ += sepZ * 0.7;
+    if (this.task !== 'panic') {
+      const flock = flockOffset(this, g);
+      dirX += flock.x; dirZ += flock.z;
+    }
     const dl = Math.hypot(dirX, dirZ) || 1;
     dirX /= dl; dirZ /= dl;
 
     // fishing: approach water edge — allow shallow water
-    const step = this.speed * dt;
+    const slope = g.terrain.maxSlope(this.pos.x, this.pos.z, 1.2);
+    const climb = this.dna.climb ?? 0.5;
+    const slopePen = Math.max(0, slope - 0.35) * (1.2 - climb);
+    const step = this.speed * dt / (1 + slopePen);
     let nx = this.pos.x + dirX * step, nz = this.pos.z + dirZ * step;
     const allowWater = this.task === 'fish';
     if (!allowWater && g.terrain.isWater(nx, nz) && !g.bridgeAt(nx, nz)) {
@@ -864,6 +1141,15 @@ export class Creature {
         if (!g.terrain.isWater(tx, tz) || g.bridgeAt(tx, tz)) { nx = tx; nz = tz; found = true; break; }
       }
       if (!found) { this.task = 'idle'; this.target = null; this.sprinting = false; return; }
+    }
+    if (g.terrain.isCliff(nx, nz) && !g.terrain.isCliff(this.pos.x, this.pos.z)) {
+      let found = false;
+      for (const off of [0.8, -0.8, 1.6, -1.6, 2.4]) {
+        const a = Math.atan2(dz, dx) + off;
+        const tx = this.pos.x + Math.cos(a) * step, tz = this.pos.z + Math.sin(a) * step;
+        if (!g.terrain.isCliff(tx, tz) && !g.terrain.isWater(tx, tz)) { nx = tx; nz = tz; found = true; break; }
+      }
+      if (!found) { nx = this.pos.x; nz = this.pos.z; }
     }
     this.pos.x = clamp(nx, -78, 78);
     this.pos.z = clamp(nz, -78, 78);
@@ -948,34 +1234,68 @@ export class Creature {
     }
 
     if (this._moving) {
-      const rate = this.sprinting ? 4.5 : 2.2;
+      const run = this.sprinting;
+      const rate = run ? 5.8 : 2.7;
       this.walkPhase += dt * this.speed * rate;
-      const s = Math.sin(this.walkPhase) * (this.sprinting ? 0.55 : 0.42);
+      const amp = run ? 0.92 : 0.52;
+      const s = Math.sin(this.walkPhase) * amp;
+      // Opposite hip / shoulder twist — a real gait, not a slide.
+      if (L.hips) L.hips.rotation.y = -s * 0.28;
+      if (L.chest) L.chest.rotation.y = s * 0.24;
+      if (L.belly) L.belly.rotation.y = s * 0.1;
       if (L.legL) L.legL.rotation.x = s;
       if (L.legR) L.legR.rotation.x = -s;
-      if (L.shinL) L.shinL.rotation.x = s * 0.4;
-      if (L.shinR) L.shinR.rotation.x = -s * 0.4;
+      if (L.shinL) L.shinL.rotation.x = Math.max(0, -s) * (run ? 1.05 : 0.75);
+      if (L.shinR) L.shinR.rotation.x = Math.max(0, s) * (run ? 1.05 : 0.75);
       if (panic) {
-        if (L.armL) L.armL.rotation.x = -2.4;
-        if (L.armR) L.armR.rotation.x = -2.4;
+        if (L.armL) L.armL.rotation.x = -2.2;
+        if (L.armR) L.armR.rotation.x = -2.2;
         if (L.lArmL) L.lArmL.rotation.x = -0.3;
         if (L.lArmR) L.lArmR.rotation.x = -0.3;
-        if (L.handL) L.handL.position.y = 0.72;
-        if (L.handR) L.handR.position.y = 0.72;
+      } else if (this.task === 'harvest' || this.task === 'work' || this.task === 'level' || this.task === 'pickup') {
+        if (L.hips) L.hips.rotation.x = this.task === 'pickup' ? 0.5 : 0.12;
+        if (L.armL) L.armL.rotation.x = -0.9 + Math.abs(s) * 0.5;
+        if (L.armR) L.armR.rotation.x = -1.2 - s * 0.4;
+      } else if (this.task === 'hunt' || this.task === 'attack') {
+        if (L.armR) L.armR.rotation.x = -1.6;
+        if (L.armL) L.armL.rotation.x = -s * 0.4;
+      } else if (this.carryTotal > 0.5 && !partner) {
+        if (L.armL) L.armL.rotation.x = -0.95 + s * 0.12;
+        if (L.armR) L.armR.rotation.x = -0.95 - s * 0.12;
       } else if (!partner) {
-        if (L.armL) L.armL.rotation.x = -s * 0.65;
-        if (L.armR) L.armR.rotation.x = s * 0.65;
-        if (L.lArmL) L.lArmL.rotation.x = -s * 0.3;
-        if (L.lArmR) L.lArmR.rotation.x = s * 0.3;
+        if (L.armL) L.armL.rotation.x = -s * (run ? 0.95 : 0.7);
+        if (L.armR) L.armR.rotation.x = s * (run ? 0.95 : 0.7);
+        if (L.lArmL) L.lArmL.rotation.x = -s * 0.35;
+        if (L.lArmR) L.lArmR.rotation.x = s * 0.35;
       }
-      if (L.chest) L.chest.position.y = 0.72 + Math.abs(s) * 0.02;
+      if (L.chest) L.chest.position.y = 0.72 + Math.abs(s) * (run ? 0.045 : 0.022);
+      if (L.hips) L.hips.position.y = 0.42 + Math.abs(s) * 0.02;
       this._moving = false;
     } else {
-      if (L.legL) L.legL.rotation.x *= 0.9;
-      if (L.legR) L.legR.rotation.x *= 0.9;
+      if (L.hips) L.hips.rotation.y *= 0.88;
+      if (L.chest) L.chest.rotation.y *= 0.88;
+      if (L.belly) L.belly.rotation.y *= 0.88;
+      if (L.legL) L.legL.rotation.x *= 0.88;
+      if (L.legR) L.legR.rotation.x *= 0.88;
+      if (L.shinL) L.shinL.rotation.x *= 0.88;
+      if (L.shinR) L.shinR.rotation.x *= 0.88;
       if (!panic && !partner) {
-        if (L.armL) L.armL.rotation.x *= 0.9;
-        if (L.armR) L.armR.rotation.x *= 0.9;
+        if (this.task === 'harvest' || this.task === 'work' || this.task === 'level' || this.task === 'build' || this.task === 'pickup') {
+          const chop = Math.sin((this.t || 0) * 7);
+          if (L.hips) L.hips.rotation.x = this.task === 'pickup' ? 0.55 : 0.15;
+          if (L.armR) L.armR.rotation.x = -1.35 + chop * 0.55;
+          if (L.armL) L.armL.rotation.x = -0.55;
+        } else if (this.carryTotal > 0.5) {
+          if (L.armL) L.armL.rotation.x = -0.95;
+          if (L.armR) L.armR.rotation.x = -0.95;
+          if (L.hips) L.hips.rotation.x = 0.08;
+        } else if (this.task === 'hunt' || this.task === 'attack') {
+          if (L.armR) L.armR.rotation.x = -1.55;
+          if (L.armL) L.armL.rotation.x = -0.35;
+        } else {
+          if (L.armL) L.armL.rotation.x *= 0.9;
+          if (L.armR) L.armR.rotation.x *= 0.9;
+        }
       }
     }
     const stage = this.lifeStage === 'child' ? 0.55 : this.lifeStage === 'elder' ? 0.92 : 1;
@@ -1025,6 +1345,7 @@ export class Animal {
       const ground = g.terrain.getHeight(this.pos.x, this.pos.z);
       if (this.pos.y <= ground) {
         this.pos.y = ground; this.airborne = false;
+        if (g.tryCookAnimal?.(this)) return;
         if (this.vel.length() > 10) this.damage(25, null);
         this.vel.set(0, 0, 0);
       }
@@ -1285,9 +1606,15 @@ export class Building {
     }
     game.scene.add(this.mesh);
     this.t = game.rng() * 10;
-    if (type !== 'bridge') game.terrain.stampDirt(x, z, type === 'campfire' ? 4.5 : 4.2, this.constructing ? 0.95 : 0.7);
+    this.fuel = type === 'campfire' ? 22 : 0;
+    this.hearthFuel = type === 'campfire';
+    if (type !== 'bridge') game.terrain.stampDirt(x, z, type === 'campfire' ? 6.5 : 4.2, this.constructing ? 0.95 : 0.7);
   }
   get pos() { return this.mesh.position; }
+  /** Wood offered to the hearth becomes burning fuel — not a harvestable pile. */
+  feedFuel(amount) {
+    this.fuel = Math.min(100, (this.fuel || 0) + amount * 1.35);
+  }
   addWork(amount, worker) {
     if (!this.constructing) return;
     if (worker) this.workers.add(worker.id);
@@ -1307,24 +1634,45 @@ export class Building {
   update(dt) {
     if (this.constructing) return;
     this.t += dt;
+    const decayMul = this.game.alignEffects?.structureDecayMul ?? 1;
+    if (decayMul > 1 && this.type !== 'campfire') {
+      this.hp = Math.max(1, this.hp - dt * 0.15 * (decayMul - 1));
+    }
     if (this.type === 'campfire') {
+      this.fuel = Math.max(4, this.fuel - dt * (0.22 + (this.game.tribeHealth(this.side) * 0.12)));
       const health = this.game.tribeHealth(this.side);
-      const f = this.mesh.userData.flame, f2 = this.mesh.userData.flame2;
-      const flicker = 1 + Math.sin(this.t * 9) * 0.13;
-      const size = (0.55 + health * 0.9) * flicker;
-      if (f) {
-        f.scale.setScalar(size);
-        f.material.emissive.setHex(health > 0.7 ? 0xdd7710 : health > 0.35 ? 0xbb4410 : 0x882211);
-        f.material.color.setHex(health > 0.7 ? 0xffb040 : health > 0.35 ? 0xff8c2e : 0xcc4422);
+      const era = this.game.eraOf?.(this.side) || 'Stone';
+      const eraTier = Math.max(0, ['Stone', 'Fire', 'Bronze', 'Iron', 'Steel'].indexOf(era));
+      updateCampfireVisual(this.mesh, {
+        health, fuel: this.fuel, eraTier, t: this.t,
+        night: this.game.cycles.isNight || this.game.cycles.hour >= 18.4 || this.game.cycles.hour < 5.4,
+        wind: this.game.cycles.wind || 0.2,
+        pop: this.game.popOf(this.side),
+        popCap: this.game.popCap(this.side),
+        rock: this.game.stateOf(this.side).rock || 0,
+        wood: this.game.stateOf(this.side).wood || 0,
+      });
+      const pad = 5.4 + this.game.popOf(this.side) * 0.32;
+      if ((this._padR || 0) < pad - 0.45) {
+        this._padR = pad;
+        this.game.terrain.levelFlat(this.pos.x, this.pos.z, Math.min(pad, 14));
       }
-      if (f2) f2.scale.setScalar(size * 0.9);
-      const l = this.mesh.userData.light;
-      if (l) l.intensity = (this.game.cycles.isNight ? 11 : 5) * (0.4 + health * 0.8);
+      this.game.terrain.stampDirt(this.pos.x, this.pos.z, pad, dt * 0.05);
+    }
+    if (this.type === 'well') {
+      this.game.ecology?.waterAt?.(this.pos.x, this.pos.z, dt * 0.08, 2.4);
+      for (const c of this.game.creatures) {
+        if (c.side !== this.side) continue;
+        if (dist2(c.pos.x, c.pos.z, this.pos.x, this.pos.z) > 64) continue;
+        c.energy = Math.min(c.maxEnergy, c.energy + dt * 1.4);
+      }
     }
     if (this.type === 'farm') {
       // Phase 4: a benevolent, orderly god makes the crops come in.
+      const soil = cellContext(this.game.terrain, this.pos.x, this.pos.z);
+      const soilMul = 1 + soil.loam * 0.5 + soil.peat * 0.35 + soil.silt * 0.15;
       this.game.stateOf(this.side).food +=
-        dt * 0.8 * this.game.cycles.gatherMul * (this.game.alignEffects?.cropGrowthMul ?? 1);
+        dt * 0.8 * this.game.cycles.gatherMul * (this.game.alignEffects?.cropGrowthMul ?? 1) * soilMul;
     }
     if (this.type === 'forge') {
       // slowly convert rock → metal if stocked
@@ -1370,7 +1718,11 @@ export class ResourceNode {
     this.held = false;
     this.airborne = false;
     this.vel = new THREE.Vector3();
-    this.mesh = kind === 'tree' ? buildTree(treeKind, game.rng)
+    this.mesh = kind === 'tree' ? buildTree(treeKind, game.rng, {
+      vigor: 0.4 + game.rng() * 0.6,
+      branch: 0.35 + game.rng() * 0.65,
+      trunk: 0.4 + game.rng() * 0.6,
+    })
       : kind === 'bush' ? buildBush(game.rng)
       : kind === 'metal' ? buildMetalOre(game.rng)
       : buildRock(game.rng);
@@ -1398,14 +1750,26 @@ export class ResourceNode {
     if (this.held) return;
     if (this.kind === 'tree' && !this.airborne) {
       if (this.growth < 1.35) {
-        // Phase 4: flora grows faster under a good/orderly god, slower under blight.
-        const bloom = this.game.alignEffects?.cropGrowthMul ?? 1;
+        const k = this.game.terrain.idx(this.pos.x, this.pos.z);
+        const temp = this.game.terrain.temperature[k] ?? 0.5;
+        const fert = this.game.ecology?.fertilityAt?.(this.pos.x, this.pos.z)
+          ?? this.game.terrain.humidity[k] ?? 0.5;
+        const seasonMul = { Spring: 1.28, Summer: 1.12, Autumn: 0.68, Winter: 0.32 }[this.game.cycles.season] || 1;
+        const bloom = (this.game.alignEffects?.cropGrowthMul ?? 1)
+          * (0.7 + fert * 0.6)
+          * (0.85 + (1 - Math.abs(temp - 0.55)) * 0.3)
+          * seasonMul;
         this.growth += (dt / 420) * bloom;
         this.amount = Math.min(18, this.amount + dt * 0.03 * bloom);
       }
       this.mesh.scale.setScalar(this.baseScale * this.growth);
       const wind = this.game.cycles.wind;
       this.mesh.rotation.z = Math.sin(this.game.cycles.time * (1.2 + wind * 2) + this.swayPhase) * 0.045 * wind;
+    }
+    if (this.kind === 'bush') {
+      const fert = this.game.ecology?.fertilityAt?.(this.pos.x, this.pos.z)
+        ?? this.game.terrain.getHumidity?.(this.pos.x, this.pos.z) ?? 0.5;
+      this.amount = Math.min(20, this.amount + dt * 0.02 * fert);
     }
     if (this.airborne) {
       this.vel.y -= 22 * dt;

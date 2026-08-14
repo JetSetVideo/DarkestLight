@@ -6,13 +6,16 @@
 // run through the same code path.
 //
 // Trigger types:   BiomeDesertified | PopulationReached | AgeReached | TerrainModified
-// Objective types: RedirectRiver | CraftTools | BuildRoad | TameCompanions | CastSpell
+// Objective types: RedirectRiver | CraftTools | BuildRoad | TameCompanions | CastSpell | GatherFood | GrowPopulation | ConvertSouls
 // Rewards:         victoryPoints, unlockedTech, weatherShift, alignmentImpact
 import { nudge } from '../engine/alignment.js';
 import { eraOf, ERAS } from '../ai/crafting.js';
 
 export const TRIGGER_TYPES = ['BiomeDesertified', 'PopulationReached', 'AgeReached', 'TerrainModified'];
-export const OBJECTIVE_TYPES = ['RedirectRiver', 'CraftTools', 'BuildRoad', 'TameCompanions', 'CastSpell'];
+export const OBJECTIVE_TYPES = [
+  'RedirectRiver', 'CraftTools', 'BuildRoad', 'TameCompanions', 'CastSpell',
+  'GatherFood', 'GrowPopulation', 'ConvertSouls',
+];
 export const WEATHER_SHIFTS = ['Rainstorm', 'ClearSkies', 'Heatwave', 'None'];
 
 /** Quest lifecycle. `dormant` quests are waiting on their trigger. */
@@ -28,6 +31,20 @@ export const QUEST_STATE = {
 // schema-conformant quest object.
 
 const TEMPLATES = [
+  {
+    id: 'be_their_god',
+    title: 'Be their god',
+    description: 'Show the flock a miracle, then fill the stores. A god is known by the people they keep alive.',
+    trigger: { type: 'AgeReached', targetValue: 'Stone' },
+    objectives: [
+      { objectiveId: 'miracle', text: 'Work a miracle over the island', type: 'CastSpell', targetAmount: 1 },
+      { objectiveId: 'feed', text: 'Gather food for the fire', type: 'GatherFood', targetAmount: 25 },
+    ],
+    rewards: {
+      victoryPoints: 60, weatherShift: 'None',
+      alignmentImpact: { orderChaosDelta: 0.02, goodEvilDelta: 0.06 },
+    },
+  },
   {
     id: 'drought',
     title: 'Survive the drought',
@@ -71,7 +88,7 @@ const TEMPLATES = [
     id: 'menagerie',
     title: 'Beasts at heel',
     description: 'Win the trust of the wild things.',
-    trigger: { type: 'PopulationReached', targetValue: '8' },
+    trigger: { type: 'PopulationReached', targetValue: '12' },
     objectives: [
       { objectiveId: 'tame', text: 'Tame animal companions', type: 'TameCompanions', targetAmount: 2 },
     ],
@@ -180,6 +197,9 @@ export class QuestEngine {
       case 'BuildRoad': return g.roads?.stats.cellsPaved ?? 0;
       case 'TameCompanions': return g.civStats?.tamed ?? 0;
       case 'CastSpell': return g.spellsCast ?? 0;
+      case 'GatherFood': return g.stateOf(quest.side).ach.food || 0;
+      case 'GrowPopulation': return g.popOf(quest.side);
+      case 'ConvertSouls': return g.stateOf(quest.side).conversions || 0;
       default: return 0;
     }
   }
@@ -206,7 +226,9 @@ export class QuestEngine {
 
       let done = true;
       for (const o of quest.objectives) {
-        o.progress = Math.max(0, this._progressOf(quest, o) - (o._base || 0));
+        const raw = this._progressOf(quest, o);
+        const absolute = o.absolute || o.type === 'GrowPopulation' || o.type === 'ConvertSouls';
+        o.progress = absolute ? raw : Math.max(0, raw - (o._base || 0));
         if (o.progress < (o.targetAmount ?? 1)) done = false;
       }
       if (done) this.complete(quest);
@@ -252,6 +274,18 @@ export class QuestEngine {
   /** Quests currently shown in the HUD. */
   get active() { return this.quests.filter((q) => q.state === QUEST_STATE.ACTIVE); }
   get completed() { return this.quests.filter((q) => q.state === QUEST_STATE.COMPLETE); }
+
+  /** Compact line for the purpose strip: first active quest + progress. */
+  hudLine() {
+    const q = this.active[0];
+    if (!q) return '';
+    const bits = q.objectives.map((o) => {
+      const need = o.targetAmount ?? 1;
+      const have = Math.min(Math.floor(o.progress || 0), need);
+      return `${have}/${need}`;
+    });
+    return `${q.title} ${bits.join(' · ')}`;
+  }
 
   /** Victory points earned from quests by a side. */
   vpFor(side) { return this.stats.victoryPoints[side] || 0; }

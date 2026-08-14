@@ -12,7 +12,7 @@ export const GENES = [
   // physical
   'mass', 'height', 'reach', 'windDrag', 'swim', 'climb',
   // mental / social
-  'curiosity', 'aggression', 'loyalty', 'fertility', 'faithAffinity',
+  'curiosity', 'aggression', 'loyalty', 'fertility', 'faithAffinity', 'willpower',
   // appearance / adaptation
   'skinTone', 'hairTone', 'coatPattern', 'hornSize', 'heatTolerance', 'coldTolerance', 'moistureAffinity',
 ];
@@ -98,6 +98,16 @@ export function mixGenome(rng, mother, father, biomeHints = {}) {
     if (g === 'moistureAffinity' && biomeHints.wet) {
       if (rng() < 0.2) child[(rng() * 4) | 0] = clamp(child[0] + 1, 0, 9);
     }
+    // alignment evolution bias (optional extras on biomeHints)
+    const driftToward = (target01) => {
+      if (target01 == null || rng() >= 0.18) return;
+      const i = (rng() * 4) | 0;
+      const want = Math.round(clamp(target01, 0, 1) * 9);
+      child[i] = clamp(child[i] + Math.sign(want - child[i]), 0, 9);
+    };
+    if (g === 'aggression') driftToward(biomeHints.aggression);
+    if (g === 'loyalty') driftToward(biomeHints.cooperation);
+    if (g === 'emotion' && biomeHints.harshness != null) driftToward(1 - biomeHints.harshness);
     loci[g] = child;
   }
 
