@@ -5,6 +5,7 @@ import { CIVS, CLASSES, BUILDINGS, JOB_LABEL, TITLES } from './civs.js';
 import { buildHuman, buildAnimal, buildMonster, buildTree, buildBush, buildRock, buildMetalOre, buildStick, buildBuilding, buildRelic, updateCampfireVisual } from './models.js';
 import { clamp, lerp, genName, dist2, dlGuard } from './util.js';
 import { WATER_Y, cellContext } from './world.js';
+import { TRIBE, VISION, HEARTH, FLORA_PLACE, INTERACT, rollFloraDna } from './data/generation.js';
 import { iconForTask, STATUS_ICONS } from './actions.js';
 import {
   GENES, makeGenome, mixGenome, phenotypeMap, dnaString as genomeString,
@@ -234,8 +235,8 @@ export class Creature {
     this._visDisk.visible = mine;
     if (!mine) return;
     const r = this.visionRadius;
-    this._visMesh.scale.set(r * 0.92, 1, r * 0.92);
-    this._visDisk.scale.set(r * 0.28, 1, r * 0.28);
+    this._visMesh.scale.set(r * VISION.coneScale, 1, r * VISION.coneScale);
+    this._visDisk.scale.set(r * VISION.diskScale, 1, r * VISION.diskScale);
     this._visMesh.material.opacity = selected ? 0.2 : 0.08;
     this._visDisk.material.opacity = selected ? 0.12 : 0.05;
   }
@@ -360,8 +361,8 @@ export class Creature {
   get visionRadius() {
     const cy = this.game.cycles;
     const eye = 0.45 + (this.dna.nightsight ?? 0.4) * 0.7;
-    const light = cy.isNight ? (cy.moonOut ? 0.55 : 0.32) : 1;
-    return (4.2 + eye * 2.4) * light;
+    const light = cy.isNight ? (cy.moonOut ? VISION.nightMoon : VISION.nightDark) : 1;
+    return (VISION.base + eye * VISION.eyeSpan) * light;
   }
   get emotion() {
     if (this.task === 'panic') return 'panicking';
@@ -733,7 +734,7 @@ export class Creature {
 
     if (this.titles.includes('king') || this.titles.includes('queen') ||
         this.cls === 'king' || this.cls === 'queen') {
-      const settled = g.popOf(this.side) >= 8 || g.hasTech(this.side, 'masonry');
+      const settled = g.popOf(this.side) >= TRIBE.royalWorkUntilPop || g.hasTech(this.side, 'masonry');
       if (settled) {
         this.task = 'wander'; this.pickWanderNear(home.pos, 4); return;
       }
@@ -766,16 +767,20 @@ export class Creature {
         if (!this.tool) {
           const tool = g.bestToolForSide(this.side, 'wood')
             || g.bestToolForSide(this.side, 'food');
-          if (tool && canAfford(st, tool) && g.rng() < 0.5) {
+          if (tool && canAfford(st, tool) && g.rng() < INTERACT.craftChance) {
             payFor(st, tool);
             this.equipTool(tool);
             if (g.civStats) g.civStats.toolsCrafted++;
             g.msg?.(`${this.name} crafted a ${tool.name}`, this.pos.clone());
           }
         }
-        // Pave an open route between structures.
+        // Pave an open route between structures. Keep at least one paver
+        // on the job so civic roads finish without starving taming.
         const route = g.roads?.openRoutes[0];
-        if (route && st.wood >= PAVE_COST_WOOD && g.rng() < 0.35) {
+        const pavers = g.creatures.filter(c => c !== this && c.side === this.side && c.task === 'pave').length;
+        const takeRoad = pavers < INTERACT.paveMax
+          && g.rng() < (pavers ? INTERACT.paveChance : INTERACT.paveFirst);
+        if (route && st.wood >= PAVE_COST_WOOD && takeRoad) {
           const wp = g.roads.nextWaypoint(route);
           if (wp) {
             this.task = 'pave';
@@ -787,7 +792,7 @@ export class Creature {
         // generous because it only fires when a tameable beast is genuinely
         // in range and this unit has no companion — a tight gate combined
         // with wandering fauna means taming effectively never happens.
-        if (!this.companion && g.rng() < 0.35) {
+        if (!this.companion && g.rng() < INTERACT.tameChance) {
           const beast = g.nearestTameable?.(this, 26);
           if (beast) { this.task = 'tame'; this.target = beast; return; }
         }
@@ -1652,10 +1657,10 @@ export class Building {
         rock: this.game.stateOf(this.side).rock || 0,
         wood: this.game.stateOf(this.side).wood || 0,
       });
-      const pad = 5.4 + this.game.popOf(this.side) * 0.32;
-      if ((this._padR || 0) < pad - 0.45) {
+      const pad = HEARTH.padBase + this.game.popOf(this.side) * HEARTH.padPerPop;
+      if ((this._padR || 0) < pad - HEARTH.padGrowStep) {
         this._padR = pad;
-        this.game.terrain.levelFlat(this.pos.x, this.pos.z, Math.min(pad, 14));
+        this.game.terrain.levelFlat(this.pos.x, this.pos.z, Math.min(pad, HEARTH.padMax));
       }
       this.game.terrain.stampDirt(this.pos.x, this.pos.z, pad, dt * 0.05);
     }
@@ -1713,16 +1718,12 @@ export class ResourceNode {
     this.game = game;
     this.kind = kind; // 'tree' | 'bush' | 'rock' | 'metal'
     this.yields = kind === 'bush' ? 'food' : kind === 'rock' ? 'rock' : kind === 'metal' ? 'metal' : 'wood';
-    this.amount = kind === 'bush' ? 20 : kind === 'tree' ? 14 : kind === 'rock' ? 10 : kind === 'metal' ? 7 : 0;
+    this.amount = kind === 'bush' ? FLORA_PLACE.yieldBush : kind === 'tree' ? FLORA_PLACE.yieldTree : kind === 'rock' ? FLORA_PLACE.yieldRock : kind === 'metal' ? FLORA_PLACE.yieldMetal : 0;
     this.claimedBy = null;
     this.held = false;
     this.airborne = false;
     this.vel = new THREE.Vector3();
-    this.mesh = kind === 'tree' ? buildTree(treeKind, game.rng, {
-      vigor: 0.4 + game.rng() * 0.6,
-      branch: 0.35 + game.rng() * 0.65,
-      trunk: 0.4 + game.rng() * 0.6,
-    })
+    this.mesh = kind === 'tree' ? buildTree(treeKind, game.rng, rollFloraDna(game.rng, treeKind))
       : kind === 'bush' ? buildBush(game.rng)
       : kind === 'metal' ? buildMetalOre(game.rng)
       : buildRock(game.rng);
@@ -1730,10 +1731,10 @@ export class ResourceNode {
     tagEntity(this.mesh, this);
     game.scene.add(this.mesh);
     this.grains = kind === 'tree' ? (this.mesh.userData.grains || 6) : 0;
-    this.growth = kind === 'tree' ? (sapling ? 0.22 : 0.55 + game.rng() * 0.45) : 1;
+    this.growth = kind === 'tree' ? (sapling ? FLORA_PLACE.saplingGrowth : FLORA_PLACE.adultGrowthMin + game.rng() * 0.45) : 1;
     if (kind === 'tree') {
       this.baseScale = this.mesh.scale.x;
-      if (sapling) this.amount = 3;
+      if (sapling) this.amount = FLORA_PLACE.yieldSapling;
       this.swayPhase = game.rng() * 10;
     }
   }
@@ -1745,31 +1746,31 @@ export class ResourceNode {
     if (this.depleted) this.game.removeResource(this);
     return got;
   }
-  regrow(amt) { if (this.kind === 'bush') this.amount = Math.min(20, this.amount + amt); }
+  regrow(amt) { if (this.kind === 'bush') this.amount = Math.min(FLORA_PLACE.yieldBush, this.amount + amt); }
   update(dt) {
     if (this.held) return;
     if (this.kind === 'tree' && !this.airborne) {
-      if (this.growth < 1.35) {
+      if (this.growth < FLORA_PLACE.maxGrowth) {
         const k = this.game.terrain.idx(this.pos.x, this.pos.z);
         const temp = this.game.terrain.temperature[k] ?? 0.5;
         const fert = this.game.ecology?.fertilityAt?.(this.pos.x, this.pos.z)
           ?? this.game.terrain.humidity[k] ?? 0.5;
-        const seasonMul = { Spring: 1.28, Summer: 1.12, Autumn: 0.68, Winter: 0.32 }[this.game.cycles.season] || 1;
+        const seasonMul = FLORA_PLACE.seasonMul[this.game.cycles.season] || 1;
         const bloom = (this.game.alignEffects?.cropGrowthMul ?? 1)
           * (0.7 + fert * 0.6)
           * (0.85 + (1 - Math.abs(temp - 0.55)) * 0.3)
           * seasonMul;
-        this.growth += (dt / 420) * bloom;
-        this.amount = Math.min(18, this.amount + dt * 0.03 * bloom);
+        this.growth += (dt / FLORA_PLACE.growPeriod) * bloom;
+        this.amount = Math.min(FLORA_PLACE.yieldTree + 4, this.amount + dt * 0.03 * bloom);
       }
       this.mesh.scale.setScalar(this.baseScale * this.growth);
       const wind = this.game.cycles.wind;
-      this.mesh.rotation.z = Math.sin(this.game.cycles.time * (1.2 + wind * 2) + this.swayPhase) * 0.045 * wind;
+      this.mesh.rotation.z = Math.sin(this.game.cycles.time * (1.2 + wind * 2) + this.swayPhase) * FLORA_PLACE.sway * wind;
     }
     if (this.kind === 'bush') {
       const fert = this.game.ecology?.fertilityAt?.(this.pos.x, this.pos.z)
         ?? this.game.terrain.getHumidity?.(this.pos.x, this.pos.z) ?? 0.5;
-      this.amount = Math.min(20, this.amount + dt * 0.02 * fert);
+      this.amount = Math.min(FLORA_PLACE.yieldBush, this.amount + dt * 0.02 * fert);
     }
     if (this.airborne) {
       this.vel.y -= 22 * dt;

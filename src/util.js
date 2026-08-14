@@ -193,8 +193,8 @@ export function genName(rng, civKey) {
   return n;
 }
 
-/** Procedural canvas noise map → THREE-ready ImageData-like data URL helper. */
-export function noiseTextureDataURL(seed, size = 64, baseHex = 0x888888, variance = 40) {
+/** Procedural canvas noise map → THREE-ready data URL. style: grain | bark | cloth | moss | rock | skin */
+export function noiseTextureDataURL(seed, size = 64, baseHex = 0x888888, variance = 40, style = 'grain') {
   const canvas = (typeof document !== 'undefined') ? document.createElement('canvas') : null;
   if (!canvas) return null;
   canvas.width = canvas.height = size;
@@ -202,20 +202,45 @@ export function noiseTextureDataURL(seed, size = 64, baseHex = 0x888888, varianc
   const img = ctx.createImageData(size, size);
   const rng = mulberry32(seed >>> 0);
   const br = (baseHex >> 16) & 255, bg = (baseHex >> 8) & 255, bb = baseHex & 255;
-  for (let i = 0; i < size * size; i++) {
-    const n = (rng() - 0.5) * 2 * variance;
-    const o = i * 4;
-    img.data[o] = clamp(br + n, 0, 255);
-    img.data[o + 1] = clamp(bg + n * 0.9, 0, 255);
-    img.data[o + 2] = clamp(bb + n * 0.8, 0, 255);
-    img.data[o + 3] = 255;
-  }
-  // faint weave / grain streaks
-  for (let y = 0; y < size; y += 3) {
+  const hash = (x, y) => {
+    const n = Math.sin(x * 127.1 + y * 311.7 + (seed % 997) * 0.013) * 43758.5453;
+    return n - Math.floor(n);
+  };
+  const value = (x, y) => {
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const fx = x - x0, fy = y - y0;
+    const u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy);
+    const a = hash(x0, y0), b = hash(x0 + 1, y0), c = hash(x0, y0 + 1), d = hash(x0 + 1, y0 + 1);
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+  };
+  const fbm = (x, y) => {
+    let s = 0, a = 0.55, f = 1, tot = 0;
+    for (let o = 0; o < 4; o++) { s += value(x * f, y * f) * a; tot += a; a *= 0.5; f *= 2; }
+    return s / tot;
+  };
+  for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
+      let n = fbm(x * 0.18, y * 0.18);
+      if (style === 'bark') n = n * 0.65 + value(x * 0.9, y * 0.12) * 0.35;
+      else if (style === 'cloth') n = n * 0.55 + ((x + y) % 4 < 1 ? 0.2 : 0) + value(x * 0.4, y * 0.4) * 0.25;
+      else if (style === 'moss') n = Math.pow(n, 1.4);
+      else if (style === 'rock') n = n * 0.7 + hash(x, y) * 0.3;
+      else if (style === 'skin') n = n * 0.4 + 0.5;
+      const delta = (n - 0.5) * 2 * variance;
       const o = (y * size + x) * 4;
-      img.data[o] = clamp(img.data[o] - 8, 0, 255);
-      img.data[o + 1] = clamp(img.data[o + 1] - 6, 0, 255);
+      img.data[o] = clamp(br + delta, 0, 255);
+      img.data[o + 1] = clamp(bg + delta * 0.9, 0, 255);
+      img.data[o + 2] = clamp(bb + delta * 0.8, 0, 255);
+      img.data[o + 3] = 255;
+    }
+  }
+  if (style === 'grain' || style === 'cloth') {
+    for (let y = 0; y < size; y += 3) {
+      for (let x = 0; x < size; x++) {
+        const o = (y * size + x) * 4;
+        img.data[o] = clamp(img.data[o] - 8, 0, 255);
+        img.data[o + 1] = clamp(img.data[o + 1] - 6, 0, 255);
+      }
     }
   }
   ctx.putImageData(img, 0, 0);

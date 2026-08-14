@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { recognizeShape, clamp } from './util.js';
 import { ResourceNode, Creature, Animal, Monster, Building } from './entities.js';
 import { BUILDINGS } from './civs.js';
+import { LIFT } from './data/generation.js';
 
 export class CameraRig {
   constructor(camera) {
@@ -42,7 +43,7 @@ export class CameraRig {
     this.camera.position.copy(this.target).add(off);
     if (terrain) {
       const h = terrain.getHeight(this.camera.position.x, this.camera.position.z);
-      const floor = Math.max(h, 0) + 2.4;
+      const floor = Math.max(h, 0) + LIFT.camFloor;
       if (this.camera.position.y < floor) this.camera.position.y = floor;
     }
     this.camera.lookAt(this.target);
@@ -380,7 +381,7 @@ export class GodCursor {
           this._saltWarned = true;
           this.msg('The sea is salt — find a lake');
         }
-      } else if ((!onGrabbable || heldMs < 1000) && moved > 14 && !onGrabbable && !this.waterBowl) {
+      } else if ((!onGrabbable || heldMs < LIFT.holdSec) && moved > 14 && !onGrabbable && !this.waterBowl) {
         this.panning = true;
         this.rig.panByDrag(e.movementX, e.movementY);
       } else if (onGrabbable && moved > 40 && heldMs < 450) {
@@ -393,8 +394,8 @@ export class GodCursor {
     if (this.held) {
       const p = this.groundPoint(e);
       if (p) {
-        const lift = 0.55 + Math.min(0.28, (performance.now() - this.downTime) / 5000);
-        this.held.mesh.position.set(p.x + 0.7, p.y + lift, p.z + 0.25);
+        const lift = LIFT.hover + Math.min(LIFT.hoverGain, (performance.now() - this.downTime) / 5000);
+        this.held.mesh.position.set(p.x + LIFT.sideX, p.y + lift, p.z + LIFT.sideZ);
         this.holdHistory.push({ x: p.x, z: p.z, t: performance.now() / 1000 });
         if (this.holdHistory.length > 30) this.holdHistory.shift();
         this.checkShake();

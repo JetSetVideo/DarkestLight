@@ -157,13 +157,15 @@ Battle · Construction · Story (stub) · Lexicon · Settings
 | Influence / ledger | `src/systems.js`, `src/ui.js`, `index.html` |
 | Wind / seeds | `src/world.js`, `seedPropagationTick` |
 | Lexicon | `index.html` tabs, `src/ui.js`, `models.js` catalog |
-| Worldgen | `src/world.js` |
+| Worldgen | `src/world.js`, `src/generation/relief.js`, `src/data/generation.js` |
+| Populate / flora / fauna | `src/generation/populate.js`, `src/data/generation.js` |
+| Drop-to-work | `src/generation/interact.js`, `src/cursor.js` |
 
 ---
 
 ## Data at each pipeline step
 
-Canonical catalogs (`CIVS`, `CLASSES`, `SPELLS`/`SPELL_BY_SHAPE`, `BIOMES` + `biomeFlags`/`cellContext`, `GENES`, `COMPANIONS`, `INVOKE_FAUNA`, ecology fertility) are the source of truth. Gameplay imports them instead of repeating magic biome ids.
+Canonical catalogs (`CIVS`, `CLASSES`, `SPELLS`/`SPELL_BY_SHAPE`, `BIOMES` + `biomeFlags`/`cellContext`, `GENES`, `COMPANIONS`, `INVOKE_FAUNA`, ecology fertility, plus `src/data/generation.js` for `RELIEF`/`CLIMATE_GEN`/`FLORA`/`TRIBE`/`VISION`/`WAVE`/`HEARTH`/`TREE_GEOM`) are the source of truth. Gameplay imports them instead of repeating magic biome ids.
 
 | Step | Inputs consumed | Outputs |
 |------|-----------------|---------|

@@ -5,6 +5,7 @@ import { CIVS, CLASSES, BUILDINGS, SPELLS } from './civs.js';
 import { noiseTextureDataURL, mulberry32 } from './util.js';
 import { applyToonShading } from './shaders/toon.js';
 import { requestUpgrade } from './generation/assetBridge.js';
+import { FLORA, HEARTH, FAUNA, TEXTURE, TREE_GEOM } from './data/generation.js';
 
 const matCache = new Map();
 const texCache = new Map();
@@ -25,13 +26,14 @@ export function mat(color, opts = {}) {
   return matCache.get(key);
 }
 
-function ensureNoiseTex(seed, hex) {
-  const key = seed + ':' + hex;
+function ensureNoiseTex(seed, hex, style = 'grain', repeat = 1) {
+  const key = seed + ':' + hex + ':' + style;
   if (texCache.has(key)) return key;
-  const url = noiseTextureDataURL(seed, 48, hex, 28);
+  const url = noiseTextureDataURL(seed, TEXTURE.size, hex, TEXTURE.variance, style);
   if (url) {
     const tex = new THREE.TextureLoader().load(url);
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(repeat, repeat);
     tex.magFilter = THREE.NearestFilter;
     texCache.set(key, tex);
   }
@@ -43,8 +45,8 @@ function box(w, h, d, color, x = 0, y = 0, z = 0, mapKey) {
   m.position.set(x, y, z); m.castShadow = true;
   return m;
 }
-function cone(r, h, seg, color, x = 0, y = 0, z = 0) {
-  const m = new THREE.Mesh(new THREE.ConeGeometry(r, h, seg), mat(color));
+function cone(r, h, seg, color, x = 0, y = 0, z = 0, mapKey) {
+  const m = new THREE.Mesh(new THREE.ConeGeometry(r, h, seg), mat(color, mapKey ? { mapKey } : {}));
   m.position.set(x, y, z); m.castShadow = true;
   return m;
 }
@@ -53,8 +55,8 @@ function cyl(rt, rb, h, seg, color, x = 0, y = 0, z = 0, mapKey) {
   m.position.set(x, y, z); m.castShadow = true;
   return m;
 }
-function sph(r, color, x = 0, y = 0, z = 0, seg = 8) {
-  const m = new THREE.Mesh(new THREE.SphereGeometry(r, seg, Math.max(4, seg - 2)), mat(color));
+function sph(r, color, x = 0, y = 0, z = 0, seg = 8, mapKey) {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(r, seg, Math.max(4, seg - 2)), mat(color, mapKey ? { mapKey } : {}));
   m.position.set(x, y, z); m.castShadow = true;
   return m;
 }
@@ -100,8 +102,8 @@ export function updateCampfireVisual(mesh, {
   pop = 4, popCap = 14, rock = 8, wood = 20,
 } = {}) {
   const ud = mesh.userData;
-  const fuelN = Math.max(0, Math.min(1, fuel / 80));
-  const woodN = Math.max(0, Math.min(1, (wood || 0) / 60));
+  const fuelN = Math.max(0, Math.min(1, fuel / HEARTH.fuelNorm));
+  const woodN = Math.max(0, Math.min(1, (wood || 0) / HEARTH.woodNorm));
   const vigor = 0.28 + health * 0.5 + fuelN * 0.4 + Math.min(0.35, pop * 0.04);
   const wave = (flame, speed, amp) => {
     if (!flame?.userData?.rest) return;
@@ -145,7 +147,7 @@ export function updateCampfireVisual(mesh, {
   const stones = ud.stones || [];
   const cap = Math.min(stones.length, Math.max(1, popCap | 0));
   const filled = Math.min(cap, Math.max(0, pop | 0));
-  const ringR = 1.15 + Math.min(1.6, cap * 0.055);
+  const ringR = HEARTH.ringBase + Math.min(HEARTH.ringMax, cap * HEARTH.ringPerCap);
   for (let i = 0; i < stones.length; i++) {
     const st = stones[i];
     const inCircle = i < cap;
@@ -180,7 +182,7 @@ export function updateCampfireVisual(mesh, {
 function buildCampfireMesh() {
   const g = new THREE.Group();
   const stones = [];
-  const SLOTS = 28;
+  const SLOTS = HEARTH.stoneSlots;
   for (let i = 0; i < SLOTS; i++) {
     const a = (i / SLOTS) * Math.PI * 2 + 0.08;
     const r = 0.95;
@@ -203,7 +205,7 @@ function buildCampfireMesh() {
     stones.push(slot);
   }
   const logs = [];
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < HEARTH.logSlots; i++) {
     const log = cyl(0.055 + (i % 4) * 0.012, 0.05, 0.7 + (i % 5) * 0.12, 7, 0x6b4f30, 0, 0.12, 0);
     log.rotation.z = Math.PI / 2.35;
     log.rotation.y = (i / 12) * Math.PI * 2 + i * 0.11;
@@ -217,7 +219,7 @@ function buildCampfireMesh() {
   flame2.position.y = 0.12;
   g.add(flame, flame2);
   const extraFlames = [];
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < HEARTH.extraFlames; i++) {
     const f = makeSinFlame(0.14, 0.55, 0xffa030, 0xcc4408);
     f.position.set(Math.cos(i * 1.7) * 0.22, 0.08, Math.sin(i * 1.7) * 0.22);
     f.visible = false;
@@ -230,10 +232,10 @@ function buildCampfireMesh() {
   g.add(light);
 
   const torches = [];
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2 + 0.4;
+  for (let i = 0; i < HEARTH.torches; i++) {
+    const a = (i / HEARTH.torches) * Math.PI * 2 + 0.4;
     const tr = new THREE.Group();
-    tr.position.set(Math.cos(a) * 6.2, 0, Math.sin(a) * 6.2);
+    tr.position.set(Math.cos(a) * HEARTH.torchR, 0, Math.sin(a) * HEARTH.torchR);
     const pole = cyl(0.04, 0.05, 1.15, 6, 0x5d4a33, 0, 0.55, 0);
     const bowl = cyl(0.08, 0.05, 0.1, 6, 0x6b4f30, 0, 1.12, 0);
     const glow = sph(0.09, 0xffa040, 0, 1.22, 0, 8);
@@ -266,8 +268,8 @@ export function buildHuman(civKey, clsKey, titles = []) {
   const rng = mulberry32(((civKey + clsKey).split('').reduce((a, c) => a + c.charCodeAt(0), 0) * 9973) >>> 0);
   const skin = civKey === 'orcs' ? 0x6f8f3f : civ.skin;
   const cloth = civ.cloth;
-  const skinKey = ensureNoiseTex((rng() * 1e9) | 0, skin);
-  const clothKey = ensureNoiseTex((rng() * 1e9) | 0, cloth);
+  const skinKey = ensureNoiseTex((rng() * 1e9) | 0, skin, 'skin', TEXTURE.skinRepeat);
+  const clothKey = ensureNoiseTex((rng() * 1e9) | 0, cloth, 'cloth', TEXTURE.clothRepeat);
   const SCALE = 0.68; // individuals are smaller than trees/houses
 
   // --- 3 connected torso parts ---
@@ -277,12 +279,12 @@ export function buildHuman(civKey, clsKey, titles = []) {
   g.add(hips, belly, chest);
 
   // shoulders
-  const shL = sph(0.07, skin, -0.16, 0.82, 0, 12);
-  const shR = sph(0.07, skin, 0.16, 0.82, 0, 12);
+  const shL = sph(0.07, skin, -0.16, 0.82, 0, 12, skinKey);
+  const shR = sph(0.07, skin, 0.16, 0.82, 0, 12, skinKey);
   g.add(shL, shR);
 
   // head + nose
-  const head = sph(0.115, skin, 0, 0.98, 0, 14);
+  const head = sph(0.115, skin, 0, 0.98, 0, 14, skinKey);
   const nose = cone(0.025, 0.05, 8, skin, 0, 0.97, 0.11);
   nose.rotation.x = Math.PI / 2;
   g.add(head, nose);
@@ -434,7 +436,7 @@ export function buildAnimal(type) {
     const finL = cone(0.04, 0.1, 6, 0x4e7a98, 0.02, 0, 0.12);
     finL.rotation.x = 0.9;
     g.add(body, tail, fin, finL, sph(0.028, 0x10202c, 0.22, 0.04, 0.08, 6));
-    g.scale.setScalar(0.42);
+    g.scale.setScalar(FAUNA.fishScale);
     g.userData.fish = true;
     g.userData.limbs = { body, tail, fin };
     g.userData.kinematic = true;
@@ -595,79 +597,92 @@ export function buildMonster(type) {
 // ============================ FLORA ============================
 export function buildTree(kind = 'oak', rng = Math.random, dna = null) {
   const g = new THREE.Group();
+  const G = TREE_GEOM;
+  const specG = G[kind] || G.oak;
   const vigor = dna?.vigor ?? (0.55 + rng() * 0.45);
   const branchN = dna?.branch ?? vigor;
   const trunkG = dna?.trunk ?? vigor;
-  const s = 0.62 + vigor * 0.55;
-  const trunkLen = (kind === 'palm' ? 1.5 : kind === 'pine' ? 0.85 : 0.7) * (0.75 + trunkG * 0.5);
-  const trunkR = (0.06 + trunkG * 0.07) * (kind === 'pine' ? 0.9 : 1);
-  const lean = (rng() - 0.5) * 0.18;
+  const s = G.scaleMin + vigor * G.scaleSpan;
+  const trunkLen = specG.trunkLen * (0.75 + trunkG * 0.5);
+  const trunkR = (0.06 + trunkG * 0.07) * specG.trunkRMul;
+  const lean = (rng() - 0.5) * G.lean;
   const yaw = rng() * Math.PI * 2;
-  const woodKey = ensureNoiseTex((rng() * 1e9) | 0, 0x6b4f30);
+  const spec = FLORA[kind] || FLORA.oak;
+  const woodHex = dna?.wood ?? spec.wood;
+  const canopy = dna?.canopy ?? spec.canopy;
+  const woodKey = ensureNoiseTex((rng() * 1e9) | 0, woodHex, 'bark', TEXTURE.barkRepeat);
+  const mossKey = ensureNoiseTex((rng() * 1e9) | 0, canopy[0], 'moss', TEXTURE.barkRepeat);
   const segs = 12;
 
-  const trunk = cyl(trunkR * 0.75, trunkR, trunkLen, segs, 0x6b4f30, 0, trunkLen * 0.5, 0, woodKey);
+  const trunk = cyl(trunkR * 0.75, trunkR, trunkLen, segs, woodHex, 0, trunkLen * 0.5, 0, woodKey);
   trunk.rotation.z = lean;
   g.add(trunk);
-  // spreading roots
-  const roots = 3 + ((branchN * 4) | 0);
+  const roots = G.rootBase + ((branchN * G.rootSpan) | 0);
   for (let i = 0; i < roots; i++) {
-    const root = cyl(0.018, 0.01, 0.22 + rng() * 0.18, 5, 0x5a4028, 0, 0.02, 0);
+    const root = cyl(0.018, 0.01, G.rootLen + rng() * G.rootLenSpan, 5, woodHex, 0, 0.02, 0, woodKey);
     root.rotation.z = Math.PI / 2.4;
     root.rotation.y = (i / roots) * Math.PI * 2;
     root.position.set(Math.cos(root.rotation.y) * 0.08, 0.02, Math.sin(root.rotation.y) * 0.08);
     g.add(root);
   }
-  const limbs = 1 + ((branchN * 3) | 0);
+  const limbs = G.limbBase + ((branchN * G.limbSpan) | 0);
   for (let i = 0; i < limbs; i++) {
-    const len = 0.28 + rng() * 0.34 * (0.5 + branchN);
-    const limb = cyl(trunkR * 0.45, 0.012, len, 5, 0x6b4f30, 0, trunkLen * (0.35 + rng() * 0.45), 0, woodKey);
+    const len = G.limbLen + rng() * G.limbLenSpan * (0.5 + branchN);
+    const limb = cyl(trunkR * 0.45, 0.012, len, 5, woodHex, 0, trunkLen * (0.35 + rng() * 0.45), 0, woodKey);
     limb.rotation.z = 0.7 + rng() * 0.5;
     limb.rotation.y = (i / Math.max(1, limbs)) * Math.PI * 2 + rng() * 0.4;
     g.add(limb);
   }
-  const grains = 3 + ((rng() * 5) | 0);
+  const grains = G.grainBase + ((rng() * G.grainSpan) | 0);
   for (let i = 0; i < grains; i++) {
-    const band = cyl(trunkR * 1.02, trunkR * 1.02, 0.025, segs, i % 2 ? 0x5a4028 : 0x7a5c37, 0, 0.12 + i * (trunkLen / (grains + 1)), 0);
+    const band = cyl(trunkR * 1.02, trunkR * 1.02, 0.025, segs, i % 2 ? 0x5a4028 : 0x7a5c37, 0, 0.12 + i * (trunkLen / (grains + 1)), 0, woodKey);
     band.rotation.z = lean;
     g.add(band);
   }
 
   if (kind === 'pine') {
-    const layers = 3 + ((rng() * 2) | 0);
+    const P = G.pine;
+    const layers = P.layers + ((rng() * P.layerSpan) | 0);
     for (let i = 0; i < layers; i++) {
-      const rr = 0.55 - i * 0.12 * (0.8 + rng() * 0.4);
-      g.add(cone(rr, 0.7 + rng() * 0.25, 8, i % 2 ? 0x2d5b3a : 0x356847, lean * 0.3, trunkLen * 0.55 + i * 0.45, 0));
+      const rr = P.coneR - i * P.coneStep * (0.8 + rng() * 0.4);
+      const col = canopy[i % canopy.length];
+      g.add(cone(rr, P.coneH + rng() * 0.25, 8, col, lean * 0.3, trunkLen * 0.55 + i * 0.45, 0, mossKey));
     }
   } else if (kind === 'palm') {
-    for (let i = 0; i < 5 + ((rng() * 3) | 0); i++) {
-      const leaf = box(0.7 + rng() * 0.4, 0.035, 0.12 + rng() * 0.08, 0x4a9440, 0, trunkLen + 0.05, 0);
+    const P = G.palm;
+    const n = P.leafBase + ((rng() * P.leafSpan) | 0);
+    for (let i = 0; i < n; i++) {
+      const leaf = box(P.leafW + rng() * 0.4, P.leafH, 0.12 + rng() * 0.08, canopy[0], 0, trunkLen + 0.05, 0, mossKey);
       leaf.rotation.y = (i / 6) * Math.PI * 2 + rng() * 0.3;
       leaf.rotation.z = 0.3 + rng() * 0.25;
       leaf.translateX(0.35);
       g.add(leaf);
     }
   } else if (kind === 'cherry') {
-    g.add(sph(0.45 + rng() * 0.2, 0xe8a9c9, lean * 0.2, trunkLen * 0.85, 0, 10));
-    g.add(sph(0.28 + rng() * 0.15, 0xf0b8d0, 0.2 + rng() * 0.15, trunkLen * 0.7, 0.1, 8));
+    const P = G.cherry;
+    g.add(sph(P.crown + rng() * 0.2, canopy[0], lean * 0.2, trunkLen * 0.85, 0, 10, mossKey));
+    g.add(sph(P.puff + rng() * 0.15, canopy[1] || canopy[0], 0.2 + rng() * 0.15, trunkLen * 0.7, 0.1, 8, mossKey));
   } else {
-    const r1 = 0.42 + rng() * 0.22;
-    g.add(sph(r1, 0x3f7a35, 0, trunkLen * 0.9, 0, 10));
-    g.add(sph(r1 * 0.65, 0x498a3d, 0.2 + rng() * 0.15, trunkLen * 0.75, 0.1, 8));
-    if (rng() > 0.4) g.add(sph(r1 * 0.5, 0x3a6e30, -0.22, trunkLen * 0.8, -0.08, 8));
+    const P = G.oak;
+    const r1 = P.crown + rng() * 0.22;
+    g.add(sph(r1, canopy[0], 0, trunkLen * 0.9, 0, 10, mossKey));
+    g.add(sph(r1 * P.puffMul, canopy[1] || canopy[0], 0.2 + rng() * 0.15, trunkLen * 0.75, 0.1, 8, mossKey));
+    if (rng() > 0.4) g.add(sph(r1 * 0.5, canopy[2] || canopy[0], -0.22, trunkLen * 0.8, -0.08, 8, mossKey));
   }
   g.rotation.y = yaw;
   g.scale.setScalar(s);
   g.userData.kind = kind;
   g.userData.grains = grains;
+  g.userData.dna = dna;
   return g;
 }
 
 export function buildBush(rng = Math.random) {
   const g = new THREE.Group();
+  const mossKey = ensureNoiseTex((rng() * 1e9) | 0, 0x3c6e32, 'moss', TEXTURE.barkRepeat);
   const s = 0.85 + rng() * 0.4;
-  g.add(sph(0.32 + rng() * 0.1, 0x3c6e32, 0, 0.28, 0, 8));
-  g.add(sph(0.22, 0x458038, 0.18, 0.26, 0.08, 7));
+  g.add(sph(0.32 + rng() * 0.1, 0x3c6e32, 0, 0.28, 0, 8, mossKey));
+  g.add(sph(0.22, 0x458038, 0.18, 0.26, 0.08, 7, mossKey));
   if (rng() > 0.3) g.add(sph(0.18, 0x3a6a2e, -0.15, 0.24, -0.1, 6));
   for (let i = 0; i < 4 + ((rng() * 4) | 0); i++)
     g.add(sph(0.04, 0xd7263d, (rng() - 0.5) * 0.45, 0.32 + rng() * 0.15, (rng() - 0.5) * 0.45, 5));
@@ -694,12 +709,11 @@ export function buildStick(rng = Math.random) {
 
 export function buildRock(rng = Math.random) {
   const g = new THREE.Group();
-  const rockKey = ensureNoiseTex((rng() * 1e9) | 0, 0x8a8578);
-  const r = sph(0.38 + rng() * 0.3, 0x8a8578, 0, 0.25, 0, 5);
-  if (r.material) { /* keep */ }
+  const rockKey = ensureNoiseTex((rng() * 1e9) | 0, 0x8a8578, 'rock', TEXTURE.rockRepeat);
+  const r = sph(0.38 + rng() * 0.3, 0x8a8578, 0, 0.25, 0, 5, rockKey);
   r.scale.y = 0.7;
   g.add(r);
-  if (rng() > 0.4) g.add(sph(0.18, 0x7d7869, 0.28, 0.14, 0.12, 5));
+  if (rng() > 0.4) g.add(sph(0.18, 0x7d7869, 0.28, 0.14, 0.12, 5, rockKey));
   g.userData.yields = 'rock';
   return g;
 }

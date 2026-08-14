@@ -1,12 +1,13 @@
 // Gerstner cel-shaded ocean + banded anime sky dome — pure Three.js shaders,
 // zero assets. Driven by the Cycles day/night/weather machine.
 import * as THREE from 'three';
+import { RELIEF, WAVE } from './data/generation.js';
 
 // Two swells, one mid chop, one cross chop; high-frequency detail is a
 // fragment-space normal perturbation so the vertex grid stays coarse.
 
 export function createOcean({ heights, fresh, gridV, worldSize }) {
-  const size = worldSize * 1.22;
+  const size = worldSize * RELIEF.oceanScale;
   const geo = new THREE.PlaneGeometry(size, size, 160, 160);
   geo.rotateX(-Math.PI / 2);
 
@@ -36,7 +37,7 @@ export function createOcean({ heights, fresh, gridV, worldSize }) {
     uSkyColor: { value: new THREE.Color(0x87b8e8) },
     uFogNear: { value: 90 },
     uFogFar: { value: 260 },
-    uWaveAmp: { value: 0.18 },
+    uWaveAmp: { value: WAVE.defaultAmp },
     uStorm: { value: 0 },
     uDeep: { value: new THREE.Color(0x1e3a5f) },
     uMid: { value: new THREE.Color(0x4a90d9) },
@@ -83,7 +84,7 @@ const OCEAN_VERT = `
     if (mapUv.x > 0.0 && mapUv.x < 1.0 && mapUv.y > 0.0 && mapUv.y < 1.0)
       inland = texture2D(uFresh, mapUv).r;
     vFresh = inland;
-    float calm = mix(1.0, 0.06, clamp(inland * 1.4, 0.0, 1.0));
+    float calm = mix(1.0, ${WAVE.inlandCalm.toFixed(2)}, clamp(inland * 1.4, 0.0, 1.0));
     float amp = uWaveAmp * calm;
     vec2 toCenter = -normalize(p0 + vec2(0.17, 0.11));
     vec3 pos = base;
@@ -191,7 +192,7 @@ void main() {
   float foamNoise = vnoise(vWorldPos.xz * 1.5 + vec2(uTime * 0.35, uTime * 0.22));
   float ring1 = step(depth, 0.34 + foamNoise * 0.26);
   float ring2 = step(abs(depth - (0.85 + 0.3 * sin(uTime * 1.3 + foamNoise * 6.2831))), 0.11);
-  float foam = clamp(ring1 + ring2 * 0.7, 0.0, 1.0) * inside * (1.0 - vFresh * 0.88);
+  float foam = clamp(ring1 + ring2 * 0.7, 0.0, 1.0) * inside * (1.0 - vFresh * ${WAVE.foamFreshCut.toFixed(2)});
   col = mix(col, FOAM, foam);
 
   // Open-water crest flecks.

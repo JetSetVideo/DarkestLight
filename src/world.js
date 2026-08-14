@@ -7,6 +7,8 @@ import * as THREE from 'three';
 import { makeFBM, clamp, lerp, pick, mulberry32 } from './util.js';
 import { createOcean, createSkyDome } from './ocean.js';
 import { pickWeatherBiased } from './engine/alignment.js';
+import { RELIEF as REL, WAVE, VISION } from './data/generation.js';
+import { sculptAltitude, sculptTemperature, sculptHumidity, volcanicField } from './generation/relief.js';
 
 export const WORLD_SIZE = 160;
 export const SEG = 208;
@@ -226,19 +228,36 @@ const GROUND_FRAG_PATCH = /* glsl */`
   {
     float green = diffuseColor.g - max(diffuseColor.r, diffuseColor.b) * 0.55;
     float sandY = diffuseColor.r * 0.45 + diffuseColor.g * 0.4 - diffuseColor.b * 0.5;
+    float dirtY = diffuseColor.r * 0.55 + diffuseColor.g * 0.35 - diffuseColor.b * 0.7;
+    float rockY = (diffuseColor.r + diffuseColor.g + diffuseColor.b) * 0.33 - green * 0.8;
     vec3 wp = vDlWorld;
+    float hsh = fract(sin(dot(floor(wp.xz * 6.0), vec2(127.1, 311.7))) * 43758.5453);
+    float pebble = fract(sin(dot(floor(wp.xz * 14.0), vec2(91.7, 47.3))) * 23421.631);
     if (green > 0.04 && wp.y > 0.15) {
-      float blades = fract(sin(dot(wp.xz * 9.0, vec2(127.1, 311.7))) * 43758.5453);
+      float blades = fract(sin(dot(wp.xz * 11.0, vec2(127.1, 311.7))) * 43758.5453);
       float sway = sin(wp.x * 14.0 + wp.z * 11.0 + uTime * 1.8) * 0.5 + 0.5;
+      float moss = fract(sin(dot(wp.xz * 3.4, vec2(73.1, 19.7))) * 23421.6);
       float gPat = mix(blades, sway, 0.35);
-      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.88, 1.12, 0.82), clamp(green * 2.2, 0.0, 0.55) * gPat);
+      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.86, 1.14, 0.80), clamp(green * 2.2, 0.0, 0.55) * gPat);
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.28, 0.42, 0.22), moss * 0.08 * clamp(green, 0.0, 1.0));
     }
     if (sandY > 0.12 && green < 0.08 && wp.y > -0.5 && wp.y < 4.0) {
       float rip = sin(dot(wp.xz, vec2(1.7, 0.9)) * 3.2 + uTime * 0.35)
                 * sin(dot(wp.xz, vec2(-0.6, 1.4)) * 5.5 + uTime * 0.2);
       rip = rip * 0.5 + 0.5;
       diffuseColor.rgb = mix(diffuseColor.rgb * 0.88, diffuseColor.rgb * 1.12, rip * clamp(sandY * 1.8, 0.0, 0.7));
+      diffuseColor.rgb += vec3(0.04, 0.03, 0.01) * step(0.92, hsh);
     }
+    if (dirtY > 0.18 && green < 0.12 && wp.y > 0.2) {
+      float grain = fract(sin(dot(wp.xz * 18.0, vec2(12.9, 78.2))) * 43758.5);
+      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.08, 0.96, 0.86), grain * 0.22);
+    }
+    if (rockY > 0.22 && green < 0.06 && wp.y > 0.4) {
+      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.12, 1.08, 1.04), step(0.82, pebble) * 0.28);
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.22, 0.21, 0.20), step(0.96, pebble) * 0.18);
+    }
+    float wet = 1.0 - smoothstep(0.05, 0.85, wp.y);
+    diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.72, 0.82, 0.78), wet * 0.22);
   }
 `;
 
@@ -361,90 +380,38 @@ export class Terrain {
         const k = j * V + i;
         const d = this._polyDist(x, z, sides, rot);
 
-        // —— Step 1: adversarial macro relief ——
-        // Keep island mostly above sea (altitude 0); valleys/rivers carve locally.
-        const plate = fbm(i * 0.038, j * 0.038);
-        const ridge = fbmRid(i * 0.055, j * 0.055);
-        const valley = fbmVal(i * 0.07, j * 0.07);
-        // Base uplift similar to prior working range (~−3.5…10), then adversaries sculpt
-        let alt = plate * 12.5 - 2.2;
-        alt += Math.pow(ridge, 1.55) * 4.5;                 // ridges push up
-        alt -= Math.pow(valley, 2.0) * 2.8 * (1 - ridge * 0.35); // valleys cut, weakly
-
-        // Island falloff — landmass stays close to the polygon edge (≥ ~half the square).
-        alt -= Math.pow(Math.max(0, d - 0.88) * 4.2, 2) * 11;
-
-        // Battle maps keep a fair river corridor between the two camps.
-        // Sandbox / story islands skip that symmetry and keep organic valleys.
-        let rd = 99;
-        if (this.pvp) {
-          const riverX = Math.sin(z * 0.055) * 10 + (fbm(z * 0.02, 2.2) - 0.5) * 4;
-          rd = Math.abs(x - riverX);
-          if (rd < 7) alt = Math.min(alt, lerp(-2.4, alt, Math.pow(rd / 7, 1.6)));
-        }
-
-        // Little clips / ledges units walk around (later: stairs, elevators).
-        const clipN = fbmRid(i * 0.16 + 3.1, j * 0.16);
-        if (clipN > 0.56 && alt > WATER_Y + 0.2) {
-          const step = 1.25 + (clipN - 0.56) * 3.4;
-          alt = Math.floor(alt / step) * step + (clipN - 0.56) * 0.15;
-        }
-
-        // Volcanic cone adversary (local radial uplift + ash later)
-        const vDist = Math.hypot(x - volX, z - volZ);
-        const volCore = clamp(1 - vDist / 28, 0, 1);
+        const plate = fbm(i * REL.plateFreq, j * REL.plateFreq);
+        const ridge = fbmRid(i * REL.ridgeFreq, j * REL.ridgeFreq);
+        const valley = fbmVal(i * REL.valleyFreq, j * REL.valleyFreq);
+        const clipN = fbmRid(i * REL.clipFreq + 3.1, j * REL.clipFreq);
         const volN = fbmVol(i * 0.08, j * 0.08);
-        const volcanic = Math.pow(volCore, 1.8) * (0.55 + volN * 0.45);
+        const volcanic = volcanicField(x, z, volX, volZ, volN);
         this.volcanic[k] = volcanic;
-        if (volcanic > 0.35) alt += volcanic * volcanic * 9;
+        const shaftN = fbmShaft(i * REL.shaftFreq, j * REL.shaftFreq);
+        const { alt, rd } = sculptAltitude({
+          plate, ridge, valley, d, pvp: this.pvp, x, z, fbm, clipN, volcanic, shaftN,
+        });
+        this.heights[k] = alt;
 
-        // Rare shafts / sinkholes
-        const shaftN = fbmShaft(i * 0.2, j * 0.2);
-        if (shaftN > 0.92 && alt > WATER_Y + 1 && rd > 10 && volcanic < 0.4)
-          alt -= 4.5 * (shaftN - 0.92) * 12;
-
-        this.heights[k] = alt; // altitude; sea level = 0
-
-        // —— Step 2: temperature (°C proxy 0..1) ——
-        // Latitude-like (north colder via z), lapse rate with altitude, volcanic heat
-        const lat = clamp(0.5 - z / WORLD_SIZE, 0, 1); // north of map cooler
-        const lapse = clamp(alt / 14, 0, 1);            // ~6.5°C/km abstracted
         const tNoise = fbmTemp(i * 0.04, j * 0.04);
-        let temp = clamp(
-          0.22 + lat * 0.55 + tNoise * 0.22 - lapse * 0.55 + volcanic * 0.35,
-          0, 1,
-        );
+        const temp = sculptTemperature({ z, worldSize: WORLD_SIZE, alt, tNoise, volcanic });
         this.temperature[k] = temp;
 
-        // —— Step 3: humidity (adversarial wet vs dry fronts) ——
         const moistBase = fbmHum(i * 0.055, j * 0.055);
         const dryFront = fbmDry(i * 0.09 + 3, j * 0.09);
-        // Orographic: windward of ridges wetter (project gradient onto wind)
-        const gx = (ridge - fbmRid((i - 1) * 0.055, j * 0.055));
-        const gz = (ridge - fbmRid(i * 0.055, (j - 1) * 0.055));
-        const orographic = clamp(-(gx * windX + gz * windZ) * 2.2, -0.25, 0.35);
-        // River / shore moisture boost; desert dry-front adversary
-        const riverBoost = rd < 12 ? (1 - rd / 12) * 0.35 : 0;
-        const shoreBoost = alt < 1.5 && alt > -0.5 ? 0.2 : 0;
-        let hum = moistBase * 0.7 + orographic + riverBoost + shoreBoost
-          - dryFront * dryFront * 0.55 * (1 - moistBase)
-          + volcanic * -0.15; // ash slopes run dry on leeward
-        hum = clamp(hum, 0, 1);
-        // Cold air holds less moisture
-        hum *= lerp(0.55, 1, temp * 0.5 + 0.5);
+        const hum = sculptHumidity({
+          moistBase, dryFront, ridge, fbmRid, i, j, windX, windZ, rd, alt, volcanic, temp,
+        });
         this.humidity[k] = hum;
 
-        // —— Step 4: biome classification ——
         const biomeKey = classifyBiome(alt, hum, temp, volcanic);
         this.biome[k] = BIOMES[biomeKey].id;
-
-        // —— Step 5: geological deposits (real-world-inspired equations) ——
         this._depositCell(k, biomeKey, alt, hum, temp, volcanic, fbmGeo, fbmGeo2, i, j, rd);
       }
     }
 
-    this.erode(4);
-    this.hydraulicPass(2);
+    this.erode(REL.erodePasses);
+    this.hydraulicPass(REL.hydraulicPasses);
     this.terrace();
     this.carveLakes(seed);
     this._markInlandFresh();
@@ -461,7 +428,7 @@ export class Terrain {
         const x = (i / SEG - 0.5) * WORLD_SIZE;
         const z = (j / SEG - 0.5) * WORLD_SIZE;
         const d = this._polyDist(x, z, sides, rot);
-        if (d < 0.82 || this.fresh[k] > 0.3) this.fresh[k] = Math.max(this.fresh[k], 1);
+        if (d < REL.inlandFreshPoly || this.fresh[k] > 0.3) this.fresh[k] = Math.max(this.fresh[k], 1);
       }
     }
   }
@@ -662,7 +629,7 @@ export class Terrain {
         `#include <color_fragment>\n${GROUND_FRAG_PATCH}`,
       );
     };
-    mat.customProgramCacheKey = () => 'dl-ground-v3';
+    mat.customProgramCacheKey = () => 'dl-ground-v5';
     this.mesh = new THREE.Mesh(geo, mat);
     this.mesh.receiveShadow = true;
     this.mesh.name = 'terrain';
@@ -905,13 +872,13 @@ export class Terrain {
         const dx = i - iC, dz = j - jC;
         const dist = Math.hypot(dx, dz);
         if (dist > r) continue;
-        if (dist < r * 0.22) { this.fog[j * V + i] = 1; continue; }
+        if (dist < r * VISION.bodyFrac) { this.fog[j * V + i] = 1; continue; }
         const ang = Math.atan2(dx, dz) - facing;
         let a = ang;
         while (a > Math.PI) a -= Math.PI * 2;
         while (a < -Math.PI) a += Math.PI * 2;
         const behind = Math.abs(a) > half;
-        const reach = behind ? r * 0.28 : r;
+        const reach = behind ? r * VISION.behindFrac : r;
         if (dist <= reach) this.fog[j * V + i] = 1;
       }
     }
@@ -976,7 +943,7 @@ export class Terrain {
 
   update(dt, sunDir) {
     this.time += dt;
-    this.water.position.y = WATER_Y + Math.sin(this.time * 0.04) * 0.06;
+    this.water.position.y = WATER_Y + Math.sin(this.time * WAVE.bobFreq) * WAVE.bobAmp;
     if (this.oceanUniforms) {
       this.oceanUniforms.uTime.value = this.time;
       if (sunDir) this.oceanUniforms.uSunDir.value.copy(sunDir);
@@ -1194,11 +1161,11 @@ export class Cycles {
       u.uSkyColor.value.copy(sky);
       u.uFogNear.value = this.scene.fog.near;
       u.uFogFar.value = this.scene.fog.far;
-      const stormN = this.weather === 'storm' || this.weather === 'blizzard' ? 1
-        : this.weather === 'rain' || this.weather === 'snow' ? 0.45
-        : this.weather === 'cloudy' ? 0.18 : 0.04;
+      const stormN = this.weather === 'storm' || this.weather === 'blizzard' ? WAVE.stormFull
+        : this.weather === 'rain' || this.weather === 'snow' ? WAVE.rainN
+        : this.weather === 'cloudy' ? WAVE.cloudyN : WAVE.calmN;
       u.uStorm.value = stormN;
-      u.uWaveAmp.value = 0.06 + stormN * 0.55 + this.wind * 0.25;
+      u.uWaveAmp.value = WAVE.sunnyAmp + stormN * WAVE.stormAmp + this.wind * WAVE.windAmp;
       const cold = this.seasonIndex === 3 ? 1 : 0;
       const hot = this.weather === 'heatwave' || this.seasonIndex === 1 ? 1 : 0;
       u.uDeep.value.setHex(cold ? 0x1a3348 : hot ? 0x1a4a62 : 0x1e3a5f);
